@@ -819,6 +819,7 @@ static void current_render_state(Nv2aRenderState *r)
     r->cull_face         = s_reg[0x039C / 4];        /* SET_CULL_FACE */
     r->front_face        = s_reg[0x03A0 / 4];        /* SET_FRONT_FACE */
     r->zeta_va           = s_gpu.zeta_offset ? dma_resolve(s_gpu.zeta_offset) : 0;
+    r->zeta_format       = (s_gpu.format >> 4) & 0xF;
     r->depth_min         = reg_f(0x0394);            /* SET_CLIP_MIN */
     r->depth_max         = reg_f(0x0398);            /* SET_CLIP_MAX */
     r->stencil_enable    = s_reg[0x032C / 4];        /* SET_STENCIL_TEST_ENABLE */
@@ -1813,6 +1814,28 @@ static int ffp_vertex(uint32_t index, Nv2aVshOutput *out)
     fetch_attr(texcoord_attr(), index, out->tex[0]);
     for (st = 1; st < 4; st++)
         fetch_attr(&s_gpu.attr[9 + st], index, out->tex[st]);
+
+    /* The fog coordinate, by SET_FOG_GEN_MODE: SPEC_ALPHA (0) reads the
+     * specular colour's alpha, FOG_X (6) the fog attribute, the rest a
+     * distance from the eye. ponytail: that distance is clip w, which is eye
+     * z under a perspective projection (PLANAR); RADIAL and an orthographic
+     * projection want the modelview, which the executor does not keep. */
+    switch (s_reg[0x02A0 / 4]) {
+    case 0:
+        fetch_attr(&s_gpu.attr[4], index, c);
+        out->fog[0] = c[3];
+        break;
+    case 6:
+        fetch_attr(&s_gpu.attr[5], index, c);
+        out->fog[0] = c[0];
+        break;
+    case 3:                                       /* ABS_PLANAR */
+        out->fog[0] = (float)fabs(w);
+        break;
+    default:
+        out->fog[0] = (float)w;
+        break;
+    }
     return 1;
 }
 
@@ -1929,9 +1952,29 @@ static Nv2aVertex *backend_slot(void)
     return &s_bverts[s_bcount];
 }
 
+static float fog_factor(float d);
+
+/* A stage's coordinate as the back end samples it. A linear texture takes
+ * texel coordinates (rc_texel): normalise them for a 2D/3D lookup, the only
+ * mode that scales. Without a combiner program stage 0 is a 2D lookup,
+ * whatever a stale stage program says. */
+static void backend_tc(int st, const float in[4], float out[4])
+{
+    const Texture *t = &s_gpu.texs[st];
+    uint32_t mode = s_gpu.rc_seen ? (s_gpu.rc.stage_program >> (st * 5)) & 0x1F : 1;
+
+    memcpy(out, in, 4 * sizeof *out);
+    if (mode <= 2 && t->valid && t->width && t->height
+        && !tex_size_from_format(t->color)) {
+        out[0] /= (float)t->width;
+        out[1] /= (float)t->height;
+    }
+}
+
 static void backend_from_xf(const Nv2aVshOutput *v, Nv2aVertex *o)
 {
     float su = 1.0f, sv = 1.0f;
+    int st;
 
     if (tex_size_from_format(s_gpu.texs[0].color)) {
         su = (float)s_gpu.texs[0].width;
@@ -1944,6 +1987,24 @@ static void backend_from_xf(const Nv2aVshOutput *v, Nv2aVertex *o)
     o->diffuse = pack_color(v->d0);
     o->u = v->tex[0][0] * su;
     o->v = v->tex[0][1] * sv;
+    o->specular = pack_color(v->d1);
+    o->fog = fog_factor(v->fog[0]);
+    for (st = 0; st < 4; st++)
+        backend_tc(st, v->tex[st], o->tc[st]);
+}
+
+static void backend_tex(const Texture *t, Nv2aTexture *o)
+{
+    o->offset = t->offset;
+    o->width  = t->width;
+    o->height = t->height;
+    o->pitch  = t->pitch;
+    o->color  = t->color;
+    o->addr_u = t->addr_u;
+    o->addr_v = t->addr_v;
+    o->levels = t->pitch ? 1 : t->levels;
+    o->filter = t->filter;
+    o->palette = t->palette;
 }
 
 /* `textured`: the batch carried texture coordinates, so the bound texture is
@@ -1952,8 +2013,9 @@ static void backend_flush(int textured)
 {
     Nv2aSurface surf;
     Nv2aRenderState rs;
-    Nv2aTexture tex;
+    Nv2aTexture tex[4];
     Nv2aBatch batch;
+    int st;
 
     if (!s_bcount)
         return;
@@ -1964,19 +2026,21 @@ static void backend_flush(int textured)
     batch.texture = NULL;
     batch.state = &rs;
     batch.rc = s_gpu.rc_seen ? &s_gpu.rc : NULL;
-    if (textured && s_gpu.texs[0].valid) {
-        tex.offset = s_gpu.texs[0].offset;
-        tex.width  = s_gpu.texs[0].width;
-        tex.height = s_gpu.texs[0].height;
-        tex.pitch  = s_gpu.texs[0].pitch;
-        tex.color  = s_gpu.texs[0].color;
-        tex.addr_u = s_gpu.texs[0].addr_u;
-        tex.addr_v = s_gpu.texs[0].addr_v;
-        tex.levels = s_gpu.texs[0].pitch ? 1 : s_gpu.texs[0].levels;
-        tex.filter = s_gpu.texs[0].filter;
-        tex.palette = s_gpu.texs[0].palette;
-        batch.texture = &tex;
+    for (st = 0; st < 4; st++) {
+        batch.stages[st] = NULL;
+        if (s_gpu.texs[st].valid) {
+            backend_tex(&s_gpu.texs[st], &tex[st]);
+            if (batch.rc && ((s_gpu.rc.stage_program >> (st * 5)) & 0x1F))
+                batch.stages[st] = &tex[st];
+        }
     }
+    if (textured && s_gpu.texs[0].valid)
+        batch.texture = &tex[0];
+    batch.clip_plane_mode = s_gpu.clip_plane_mode;
+    /* FOG_COLOR is R in bits 0-7, the reverse of a D3DCOLOR. */
+    batch.fog_color = (s_gpu.fog_color & 0xFF00FF00u)
+                    | ((s_gpu.fog_color & 0xFFu) << 16)
+                    | ((s_gpu.fog_color >> 16) & 0xFFu);
     s_backend->draw(&surf, &batch);
     s_gpu.tris_drawn += s_bcount / 3;
     s_bcount = 0;
@@ -2014,6 +2078,7 @@ static void raster_indexed(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t argb)
         if (!o)
             return;
         for (k = 0; k < 3; k++) {
+            int st;
             o[k].x = p[k][0];
             o[k].y = p[k][1];
             o[k].z = p[k][2];
@@ -2021,6 +2086,13 @@ static void raster_indexed(uint32_t i0, uint32_t i1, uint32_t i2, uint32_t argb)
             o[k].diffuse = vertex_color(ix[k]);
             o[k].u = textured ? uv[k][0] : 0.0f;
             o[k].v = textured ? uv[k][1] : 0.0f;
+            o[k].specular = 0;
+            o[k].fog = 1.0f;
+            for (st = 0; st < 4; st++) {
+                float t[4];
+                fetch_attr(st ? &s_gpu.attr[9 + st] : texcoord_attr(), ix[k], t);
+                backend_tc(st, t, o[k].tc[st]);
+            }
         }
         s_bcount += 3;
         return;
@@ -2246,9 +2318,15 @@ static int rc_stage_fetch(int st, const float c[4], float out[4])
                 return 0;
         }
         return 1;
+    case 6: case 7: case 15: case 16:   /* BUMPENVMAP(_LUM), DEPENDENT_AR/GB */
+        /* ponytail: sampled at the stage's own coordinates, without the
+         * offset the previous stage would add: the texture shows, unbumped.
+         * Model the bump matrix when a title's water depends on it. */
+        rc_texel(t, 0, c[0] / q, c[1] / q, out);
+        return 1;
     default:
-        /* ponytail: bump-env and dot-product modes read zero; they are water
-         * and bump effects -- add them when a title's look depends on one. */
+        /* ponytail: the dot-product modes read zero; they are bump and
+         * reflection effects -- add them when a title's look depends on one. */
         out[0] = out[1] = out[2] = out[3] = 0.0f;
         return 1;
     }
@@ -2410,36 +2488,35 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
  * split cleanly by row: every pixel reads only its own depth and colour, so
  * interleaved rows on N threads need no locking. Small triangles stay on the
  * executor thread, where waking workers would cost more than it saves.
+ * The same threads transform vertices (xf_transform_all).
  * RECOMP_RASTER_THREADS=<n> sets the count (1 = off); the default leaves a
  * few cores for the title and the host.
  * ponytail: s_gpu.pixels/pixel_max in put_pixel are unsynchronised stats and
  * may undercount; nothing depends on them. */
-#define NV_RASTER_MAX_THREADS 16
+#define NV_POOL_MAX_THREADS 16
 #define NV_RASTER_MT_MIN_PIXELS 8192
 
 #if defined(_WIN32)
 static struct {
-    int n;                                  /* threads incl. the caller */
-    HANDLE start[NV_RASTER_MAX_THREADS], done;
+    int n;                                  /* threads incl. the executor */
+    HANDLE start[NV_POOL_MAX_THREADS], done;
     volatile LONG pending;
-    const XfTri *tri;
-    XfCount cnt[NV_RASTER_MAX_THREADS];
+    void (*job)(int k);
 } s_pool;
 
-static DWORD WINAPI raster_worker(LPVOID arg)
+static DWORD WINAPI pool_worker(LPVOID arg)
 {
     int k = (int)(intptr_t)arg;
     for (;;) {
         WaitForSingleObject(s_pool.start[k], INFINITE);
-        memset(&s_pool.cnt[k], 0, sizeof s_pool.cnt[k]);
-        xf_rows(s_pool.tri, s_pool.tri->miny + k, s_pool.n, &s_pool.cnt[k]);
+        s_pool.job(k);
         if (InterlockedDecrement(&s_pool.pending) == 0)
             SetEvent(s_pool.done);
     }
     return 0;
 }
 
-static int raster_pool_size(void)
+static int pool_size(void)
 {
     static int init;
     if (!init) {
@@ -2448,15 +2525,19 @@ static int raster_pool_size(void)
         int n, k;
         init = 1;
         GetSystemInfo(&si);
-        n = e ? atoi(e) : (int)si.dwNumberOfProcessors - 4;
+        n = (int)si.dwNumberOfProcessors - 4;
+        if (n < (int)si.dwNumberOfProcessors / 2)
+            n = (int)si.dwNumberOfProcessors / 2;
+        if (e)
+            n = atoi(e);
         if (n < 1) n = 1;
-        if (n > NV_RASTER_MAX_THREADS) n = NV_RASTER_MAX_THREADS;
+        if (n > NV_POOL_MAX_THREADS) n = NV_POOL_MAX_THREADS;
         s_pool.n = n;
         if (n > 1) {
             s_pool.done = CreateEventA(NULL, FALSE, FALSE, NULL);
             for (k = 0; k < n - 1; k++) {
                 s_pool.start[k] = CreateEventA(NULL, FALSE, FALSE, NULL);
-                CloseHandle(CreateThread(NULL, 0, raster_worker,
+                CloseHandle(CreateThread(NULL, 0, pool_worker,
                                          (LPVOID)(intptr_t)k, 0, NULL));
             }
         }
@@ -2464,31 +2545,43 @@ static int raster_pool_size(void)
     return s_pool.n;
 }
 
+/* job(k) once on every pool thread, k = n - 1 on the executor; returns when
+ * all of them have. Only with pool_size() > 1. */
+static void pool_run(void (*job)(int k))
+{
+    int k, n = pool_size();
+    s_pool.job = job;
+    s_pool.pending = n - 1;
+    for (k = 0; k < n - 1; k++)
+        SetEvent(s_pool.start[k]);
+    job(n - 1);
+    WaitForSingleObject(s_pool.done, INFINITE);
+}
+
+static const XfTri *s_rtri;
+static XfCount s_rcnt[NV_POOL_MAX_THREADS];
+
+static void raster_job(int k)
+{
+    memset(&s_rcnt[k], 0, sizeof s_rcnt[k]);
+    xf_rows(s_rtri, s_rtri->miny + k, s_pool.n, &s_rcnt[k]);
+}
+
 static void xf_rows_parallel(const XfTri *T, XfCount *total)
 {
-    int n = raster_pool_size(), k;
+    int n = pool_size(), k;
     long px = (long)(T->maxx - T->minx) * (T->maxy - T->miny);
 
     if (n <= 1 || px < NV_RASTER_MT_MIN_PIXELS || T->maxy - T->miny < n) {
         xf_rows(T, T->miny, 1, total);
         return;
     }
-    s_pool.tri = T;
-    s_pool.pending = n - 1;
-    for (k = 0; k < n - 1; k++)
-        SetEvent(s_pool.start[k]);
-    {
-        XfCount mine = {0, 0, 0};
-        xf_rows(T, T->miny + (n - 1), n, &mine);
-        WaitForSingleObject(s_pool.done, INFINITE);
-        total->depth_fail += mine.depth_fail;
-        total->pixels += mine.pixels;
-        total->zpass += mine.zpass;
-    }
-    for (k = 0; k < n - 1; k++) {
-        total->depth_fail += s_pool.cnt[k].depth_fail;
-        total->pixels += s_pool.cnt[k].pixels;
-        total->zpass += s_pool.cnt[k].zpass;
+    s_rtri = T;
+    pool_run(raster_job);
+    for (k = 0; k < n; k++) {
+        total->depth_fail += s_rcnt[k].depth_fail;
+        total->pixels += s_rcnt[k].pixels;
+        total->zpass += s_rcnt[k].zpass;
     }
 }
 #else
@@ -2750,15 +2843,84 @@ static void xf_set_viewport(void)
     s_xf_o[2] = of[2];
 }
 
+/* Transform a batch's vertices on several threads.
+ *
+ * Every vertex is independent, and a 3D scene is a lot of them: Sneak King's
+ * saw mill sends ~160,000 a frame, and transforming them on the executor
+ * thread was 68 % of its time. The main thread waits on the executor at
+ * every kick (KickOff's PFB flush), so that was the frame rate: 20 fps.
+ * Workers take chunks of the batch from a shared counter; the executor thread
+ * takes chunks too. Small batches, and programs that write constants, stay on
+ * the executor thread. They are the rasteriser's pool (pool_size). */
+#define NV_XF_MT_MIN   512                 /* vertices: below this, one thread */
+#define NV_XF_CHUNK    128
+
+/* Per vertex of the batch: did it transform. A vertex that did not (w = 0,
+ * an attribute type fetch_attr does not know) loses its own triangles only. */
+static uint8_t *s_xf_ok;
+
+#if defined(_WIN32)
+static struct {
+    volatile LONG next;
+    uint32_t count;
+} s_xjob;
+
+static void xf_job(int k)
+{
+    (void)k;
+    for (;;) {
+        LONG i0 = InterlockedExchangeAdd(&s_xjob.next, NV_XF_CHUNK), i;
+        LONG end = i0 + NV_XF_CHUNK;
+        if (i0 >= (LONG)s_xjob.count)
+            return;
+        if (end > (LONG)s_xjob.count)
+            end = (LONG)s_xjob.count;
+        for (i = i0; i < end; i++)
+            s_xf_ok[i] = (uint8_t)transform_vertex(s_gpu.idx[i], &s_xf[i]);
+    }
+}
+#endif
+
+/* s_xf[i] = transform of s_gpu.idx[i], s_xf_ok[i] whether it worked, i < n.
+ * 0: no vertex did (no program to run). */
+static int xf_transform_all(uint32_t n)
+{
+    uint32_t i;
+#if defined(_WIN32)
+    if (pool_size() > 1 && n >= NV_XF_MT_MIN
+        && !(batch_uses_program() && nv2a_vsh_writes_constants())) {
+        /* The first vertex alone: it decodes a new program and settles the
+         * interpreter's lazy state before the workers share it. */
+        s_xf_ok[0] = (uint8_t)transform_vertex(s_gpu.idx[0], &s_xf[0]);
+        s_xjob.count = n;
+        s_xjob.next = 1;
+        pool_run(xf_job);
+    } else
+#endif
+    for (i = 0; i < n; i++)
+        s_xf_ok[i] = (uint8_t)transform_vertex(s_gpu.idx[i], &s_xf[i]);
+    for (i = 0; i < n; i++)
+        if (s_xf_ok[i])
+            return 1;
+    return 0;
+}
+
+static void xf_tri(uint32_t a, uint32_t b, uint32_t c)
+{
+    if (s_xf_ok[a] && s_xf_ok[b] && s_xf_ok[c])
+        raster_xf_clipped(&s_xf[a], &s_xf[b], &s_xf[c]);
+}
+
 static void raster_batch_program(void)
 {
     uint32_t i, n = s_gpu.idx_count;
 
     if (!s_xf && !(s_xf = (Nv2aVshOutput *)calloc(NV_MAX_INDICES, sizeof *s_xf)))
         return;
-    for (i = 0; i < n; i++)
-        if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
-            return;                                    /* no program loaded */
+    if (!s_xf_ok && !(s_xf_ok = (uint8_t *)calloc(NV_MAX_INDICES, 1)))
+        return;
+    if (!xf_transform_all(n))
+        return;                                        /* no program loaded */
     xf_set_viewport();
     {
         const VertexAttr *tc = texcoord_attr();
@@ -2860,27 +3022,27 @@ static void raster_batch_program(void)
     switch (s_gpu.prim) {
     case NV_PRIM_TRIANGLES:
         for (i = 0; i + 2 < n; i += 3)
-            raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+2]);
+            xf_tri(i, i+1, i+2);
         break;
     case NV_PRIM_TRIANGLE_STRIP:
         for (i = 0; i + 2 < n; i++)
-            raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+2]);
+            xf_tri(i, i+1, i+2);
         break;
     case NV_PRIM_TRIANGLE_FAN:
     case NV_PRIM_POLYGON:
         for (i = 1; i + 1 < n; i++)
-            raster_xf_clipped(&s_xf[0], &s_xf[i], &s_xf[i+1]);
+            xf_tri(0, i, i+1);
         break;
     case NV_PRIM_QUADS:
         for (i = 0; i + 3 < n; i += 4) {
-            raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+2]);
-            raster_xf_clipped(&s_xf[i], &s_xf[i+2], &s_xf[i+3]);
+            xf_tri(i, i+1, i+2);
+            xf_tri(i, i+2, i+3);
         }
         break;
     case NV_PRIM_QUAD_STRIP:
         for (i = 0; i + 3 < n; i += 2) {
-            raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+3]);
-            raster_xf_clipped(&s_xf[i], &s_xf[i+3], &s_xf[i+2]);
+            xf_tri(i, i+1, i+3);
+            xf_tri(i, i+3, i+2);
         }
         break;
     default:

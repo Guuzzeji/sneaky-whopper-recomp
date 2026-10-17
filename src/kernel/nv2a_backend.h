@@ -25,9 +25,15 @@
  * combiner output scale, and a back end that draws texel * diffuse instead
  * shows such a title at half brightness.
  *
- * ponytail: texture stages 1-3, the specular colour and fog are not passed
- * on: a back end sees stage 0 and the diffuse colour. Extend Nv2aBatch when
- * that matters rather than adding callbacks.
+ * The combiner reads all four texture stages, the specular colour and fog,
+ * so those arrive too: Nv2aBatch.stages and Nv2aVertex.tc/specular/fog. A
+ * lightmapped world (Sneak King: r0 = t0 * v0, then r0 *= t1) is black
+ * without stage 1.
+ *
+ * ponytail: cube maps arrive as their first face, and the bump/dot-product
+ * stage modes carry no bump matrix or dot-product chain: a back end samples
+ * those stages at their own coordinates. Extend Nv2aBatch when a title's look
+ * depends on one.
  */
 #ifndef NV2A_BACKEND_H
 #define NV2A_BACKEND_H
@@ -73,6 +79,14 @@ typedef struct {
     float    rhw;               /* 1/w, 1 for pre-transformed batches */
     uint32_t diffuse;           /* 0xAARRGGBB */
     float    u, v;              /* texels */
+    /* What the register combiners read: the specular colour (v1,
+     * 0xAARRGGBB), the fog factor after the fog unit (1: no fog), and each
+     * stage's texture coordinate as the stage consumes it, before the divide
+     * by q (tc[st][3]). For a 2D/3D stage xy are normalised, also on a linear
+     * texture, so the stage samples at tc.xy / tc.w over 0..1. */
+    uint32_t specular;
+    float    fog;
+    float    tc[4][4];
 } Nv2aVertex;
 
 /* Render state as the title set it, in NV2A's own (OpenGL) enum values:
@@ -86,6 +100,7 @@ typedef struct {
     uint32_t color_mask;
     uint32_t cull_enable, cull_face, front_face;
     uint32_t zeta_va;                                    /* 0: no depth surface */
+    uint32_t zeta_format;       /* SURFACE_FORMAT bits 4-7: 1 Z16, 2 Z24S8 */
     float    depth_min, depth_max;                       /* SET_CLIP_MIN/MAX */
     /* SET_STENCIL_*: compare function as above; ops GL_KEEP 0x1E00, GL_ZERO 0,
      * GL_REPLACE 0x1E01, GL_INCR 0x1E02, GL_DECR 0x1E03, GL_INVERT 0x150A,
@@ -105,6 +120,15 @@ typedef struct {
     /* The combiner program (nv2a_rc_eval is the reference), or NULL before
      * the title has programmed one: then texel * diffuse. */
     const Nv2aCombiner *rc;
+    /* The texture of each stage the combiner program enables (stage_program,
+     * 5 bits a stage), NULL when that stage is off or unusable; an unusable
+     * stage reads white, as in the software path. `texture` is the stage 0
+     * that a batch without combiners samples. */
+    const Nv2aTexture *stages[4];
+    uint32_t fog_color;         /* 0xAARRGGBB: the combiner's fog register */
+    /* SET_SHADER_CLIP_PLANE_MODE: for a CLIPPLANE stage, bit st*4+j set kills
+     * the pixel when tc[st][j] >= 0, clear when it is < 0. */
+    uint32_t clip_plane_mode;
 } Nv2aBatch;
 
 typedef struct {

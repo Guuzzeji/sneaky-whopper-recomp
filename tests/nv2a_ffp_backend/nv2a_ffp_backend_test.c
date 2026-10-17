@@ -8,6 +8,8 @@
  *   - fixed-function lighting replaces the vertex colour with the light sum;
  *   - the render state carries the stencil registers, with the hardware's
  *     reset values until the title writes them;
+ *   - with combiners, every enabled texture stage arrives, with its
+ *     coordinates normalised, and so does the fog colour;
  *   - the semaphore release lands where the title said, method 0x0310 on
  *     subchannel 5 is latched into PGRAPH 0x400B10, and clears and flips reach
  *     the back end.
@@ -53,8 +55,9 @@ static struct {
     Nv2aSurface surf;
     Nv2aRenderState rs;
     uint32_t count;
-    Nv2aVertex v[8];
-    int textured;
+    Nv2aVertex v[8], last;
+    int textured, stage1;
+    uint32_t fog_color;
     uint32_t clear_flags, clear_argb;
 } s_be;
 
@@ -76,8 +79,11 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     s_be.rs = *b->state;
     s_be.count = b->count;
     s_be.textured = b->texture != NULL;
+    s_be.stage1 = b->stages[1] != NULL;
+    s_be.fog_color = b->fog_color;
     for (i = 0; i < b->count && i < 8; i++)
         s_be.v[i] = b->vertices[i];
+    s_be.last = b->vertices[b->count - 1];
 }
 
 static void be_flip(void) { s_be.flips++; }
@@ -208,11 +214,52 @@ int main(void)
     CHECK((s_be.v[0].diffuse & 0x0000FF00u) == 0);
     m(0x0314, 0);
 
+    /* A batch big enough to be transformed on several threads (512 vertices
+     * or more) comes out as the single-threaded path would: vertex i of the
+     * array at x = i, so the last one, from a worker's chunk, says where it
+     * landed. 600 vertices, 200 triangles (the middle vertex of each raised,
+     * or all of them are degenerate), drawn in 256-vertex pieces. */
+    for (i = 0; i < 600; i++) {
+        putf(0x8000 + 12 * i, (float)i / 320.0f - 1.0f);
+        putf(0x8004 + 12 * i, i % 3 == 1 ? 0.5f : 0); putf(0x8008 + 12 * i, 0);
+    }
+    m(0x1720, 0x8000);
+    m(0x17FC, 5);
+    m(0x1810, 0u | (255u << 24)); m(0x1810, 256u | (255u << 24)); m(0x1810, 512u | (87u << 24));
+    m(0x17FC, 0);
+    CHECK(s_be.count == 600);
+    CHECK(near_(s_be.v[1].x, 2.0f));                  /* (1/320 * 320 + 320 - 320) * 2 */
+    CHECK(near_(s_be.last.x, 1198.0f));               /* vertex 599: x 599, at 2x AA */
+    m(0x1720, 0x2000);
+
     /* Anti-aliasing off: the same transform lands unscaled. */
     m(0x0208, 0x0008);
     m(0x17FC, 5); m(0x1810, 2u << 24); m(0x17FC, 0);
     CHECK(s_be.surf.aa_sx == 1 && s_be.surf.width == 640);
     CHECK(near_(s_be.v[1].x, 640.0f) && near_(s_be.v[1].y, 480.0f));
+
+    /* Combiners reading stage 1: a linear 64x32 A8R8G8B8 texture, whose
+     * coordinates come in texels and reach the back end normalised. Program
+     * 0x21 is PROJECT2D on stages 0 and 1. FOG_COLOR is R in bits 0-7 and
+     * arrives as a D3DCOLOR. */
+    m(0x1B40, 0x7000);                                /* stage 1 OFFSET */
+    m(0x1B44, 0x12u << 8);                            /* FORMAT: linear A8R8G8B8 */
+    m(0x1B50, 256u << 16);                            /* CONTROL1: pitch 256 */
+    m(0x1B5C, (64u << 16) | 32);                      /* IMAGE_RECT 64x32 */
+    putf(0x5800, 32); putf(0x5804, 16);
+    putf(0x5808, 64); putf(0x580C, 32);
+    putf(0x5810, 0);  putf(0x5814, 0);
+    m(0x1748, 0x5800); m(0x1788, 2 | (2 << 4) | (8 << 8));        /* attr 10: float2 */
+    m(0x1E70, 0x21);                                  /* SHADER_STAGE_PROGRAM */
+    m(0x1E60, 1);                                     /* COMBINER_CONTROL: 1 stage */
+    m(0x02A8, 0x00112233u);                           /* FOG_COLOR */
+    m(0x17FC, 5); m(0x1810, 2u << 24); m(0x17FC, 0);
+    CHECK(s_be.stage1);
+    CHECK(near_(s_be.v[0].tc[1][0], 0.5f) && near_(s_be.v[0].tc[1][1], 0.5f));
+    CHECK(near_(s_be.v[1].tc[1][0], 1.0f) && near_(s_be.v[1].tc[1][1], 1.0f));
+    CHECK(s_be.fog_color == 0x00332211u);
+    CHECK(near_(s_be.v[0].fog, 1.0f));                /* fog off: factor 1 */
+    m(0x1748, 0); m(0x1788, 2);                       /* attr 10 off again */
 
     /* A garbage index (the walk is 32 bits wide now) must not reach outside
      * guest memory: start 0xFFFFFF at a 12-byte stride is 200 MB past the

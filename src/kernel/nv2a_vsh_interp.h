@@ -50,6 +50,11 @@ void nv2a_vsh_set_cxt_write(uint32_t enable);         /* _CXT_WRITE_EN      */
  * transform this batch" rather than drawing garbage. */
 int  nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out);
 
+/* nv2a_vsh_run may be called from several threads at once, provided one call
+ * has completed since the program last changed (the first decodes it) and
+ * this returns 0: a program that writes constants (CXT_WRITE) is serial. */
+int  nv2a_vsh_writes_constants(void);
+
 /* Direct access, for the self-test. */
 void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
 const float *nv2a_vsh_constant(uint32_t index);   /* for traces */
