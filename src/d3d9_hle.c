@@ -29,6 +29,7 @@
 
 #include "recomp/gen/recomp_types.h"
 #include "d3d8_swizzle.h"
+#include "overlay.h"
 
 /* XbSymbolDatabase (analysis/xbsymbol/xbsymbol_vars.json). */
 #define XB_RENDER_STATE      0x0020D090u   /* D3D_g_RenderState[166] */
@@ -102,6 +103,7 @@ extern void sub_00201000_gen(void);
 extern void sub_00200FC0_gen(void);
 extern void sub_001EEF60_gen(void);
 extern void sub_001EEAD0_gen(void);
+void mkb_set_menu_cursor(int on);           /* toolkit src/input/mkb_input.h */
 extern void sub_001EFF50_gen(void);
 extern void sub_001EEFC0_gen(void);
 extern void sub_001F0330_gen(void);
@@ -307,6 +309,8 @@ static IDirect3DSwapChain9 *s_sc;          /* sized to the window's client area 
 static UINT s_sc_w, s_sc_h;
 static int s_failed;
 static uint32_t s_scale = 2;
+static OverlayD3dStats s_st;                /* this frame's counters (overlay) */
+static unsigned s_hd_hits;                  /* textures RECOMP_HD_TEX replaced */
 static uint32_t s_frame;
 
 static int dev_ready(void)
@@ -451,6 +455,7 @@ static void rt_upload(HostRt *r)
     D3DLOCKED_RECT lr;
     uint32_t x, y, bpp16 = r->xfmt == 0x11 || r->xfmt == 0x05;
 
+    s_st.rt_uploads++;
     if (s_up_w != r->w || s_up_h != r->h) {
         if (s_up_sys) IDirect3DSurface9_Release(s_up_sys);
         if (s_up_def) IDirect3DSurface9_Release(s_up_def);
@@ -655,6 +660,7 @@ static IDirect3DBaseTexture9 *tex_create(const XFmt *f, uint32_t data, uint32_t 
     IDirect3DCubeTexture9 *tc = NULL;
     HRESULT hr;
 
+    s_st.tex_creates++;
     if (!levels) levels = 1;
     if (cube)
         hr = IDirect3DDevice9_CreateCubeTexture(s_dev, w, levels, 0, f->d3d,
@@ -686,6 +692,69 @@ static IDirect3DBaseTexture9 *tex_create(const XFmt *f, uint32_t data, uint32_t 
             src += ((face_bytes + 127) & ~127u) - face_bytes;
     }
     return cube ? (IDirect3DBaseTexture9 *)tc : (IDirect3DBaseTexture9 *)t2;
+}
+
+/* RECOMP_HD_TEX=<dir>: a replacement for a guest texture, from
+ * <dir>/<hash>.dds (DXT1/3/5, any size; tools/xen_tex.py makes them from the
+ * 360 packages). The hash is the one tex_get keys the cache on, so a texture
+ * is replaced exactly when its guest bytes match. Coordinates of swizzled
+ * and DXT textures are normalized, so a bigger texture needs nothing else. */
+static IDirect3DBaseTexture9 *hd_load(uint32_t hash)
+{
+    static const char *dir = (const char *)-1;
+    char path[MAX_PATH];
+    uint8_t hdr[128], *buf = NULL;
+    IDirect3DTexture9 *t = NULL;
+    uint32_t w, h, mips, fourcc, bpb, lv, off = 0;
+    long n;
+    D3DFORMAT fmt;
+    FILE *f;
+
+    if (dir == (const char *)-1)
+        dir = getenv("RECOMP_HD_TEX");
+    if (!dir || !*dir)
+        return NULL;
+    snprintf(path, sizeof path, "%s/%08x.dds", dir, hash);
+    f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f) - 128;
+    fseek(f, 0, SEEK_SET);
+    if (n <= 0 || fread(hdr, 1, 128, f) != 128 || memcmp(hdr, "DDS ", 4)
+        || !(buf = (uint8_t *)malloc((size_t)n)) || fread(buf, 1, (size_t)n, f) != (size_t)n)
+        goto done;
+    memcpy(&h, hdr + 12, 4);
+    memcpy(&w, hdr + 16, 4);
+    memcpy(&mips, hdr + 28, 4);
+    memcpy(&fourcc, hdr + 84, 4);
+    if (!mips) mips = 1;
+    if (fourcc == MAKEFOURCC('D', 'X', 'T', '1')) { fmt = D3DFMT_DXT1; bpb = 8; }
+    else if (fourcc == MAKEFOURCC('D', 'X', 'T', '3')) { fmt = D3DFMT_DXT3; bpb = 16; }
+    else if (fourcc == MAKEFOURCC('D', 'X', 'T', '5')) { fmt = D3DFMT_DXT5; bpb = 16; }
+    else goto done;
+    if (FAILED(IDirect3DDevice9_CreateTexture(s_dev, w, h, mips, 0, fmt, D3DPOOL_MANAGED,
+                                              &t, NULL)))
+        goto done;
+    for (lv = 0; lv < mips; lv++) {
+        uint32_t lw = w >> lv ? w >> lv : 1, lh = h >> lv ? h >> lv : 1;
+        uint32_t row = (lw + 3) / 4 * bpb, rows = (lh + 3) / 4, y;
+        D3DLOCKED_RECT lr;
+        if (off + row * rows > (uint32_t)n)
+            break;
+        if (SUCCEEDED(IDirect3DTexture9_LockRect(t, lv, &lr, NULL, 0))) {
+            for (y = 0; y < rows; y++)
+                memcpy((uint8_t *)lr.pBits + (size_t)y * lr.Pitch, buf + off + y * row, row);
+            IDirect3DTexture9_UnlockRect(t, lv);
+        }
+        off += row * rows;
+    }
+    if (s_hd_hits++ < 8)
+        fprintf(stderr, "[HD] %08x -> %ux%u\n", hash, w, h);
+done:
+    free(buf);
+    fclose(f);
+    return (IDirect3DBaseTexture9 *)t;
 }
 
 /* The host texture for a guest texture (and palette), uploaded or refreshed
@@ -747,8 +816,10 @@ static IDirect3DBaseTexture9 *tex_get(uint32_t res, uint32_t pal_res,
     }
     t->data = data; t->format = format; t->size = size; t->palette = pal;
     t->hash = hash; t->checked = s_frame; t->w = w; t->h = h;
-    t->tex = tex_create(f, data, format, w, h, pitch,
-                        pal ? (const uint32_t *)gp(pal) : NULL);
+    t->tex = !pal && !pitch && !((format >> 2) & 1) ? hd_load(hash) : NULL;
+    if (!t->tex)
+        t->tex = tex_create(f, data, format, w, h, pitch,
+                            pal ? (const uint32_t *)gp(pal) : NULL);
     return t->tex;
 }
 
@@ -776,6 +847,7 @@ static void rs(D3DRENDERSTATETYPE st, DWORD v)
         return;
     s_rs_valid[st] = 1;
     s_rs_shadow[st] = v;
+    s_st.states++;
     IDirect3DDevice9_SetRenderState(s_dev, st, v);
 }
 
@@ -1329,6 +1401,7 @@ static void vs_compile(HostVs *h)
     const char *dump = getenv("RECOMP_D3D9_DUMP_VSH");
     Sb s = { s_hlsl, sizeof s_hlsl, 0 };
 
+    s_st.vs_compiles++;
     h->tried = 1;
     s_hlsl[0] = 0;
     vsh_to_hlsl(h->mc, h->nmc, &s, &h->inputs, &h->uses_vp);
@@ -1568,6 +1641,8 @@ static void draw(uint32_t xprim, uint32_t n, const uint16_t *idx,
         }
         IDirect3DDevice9_DrawIndexedPrimitiveUP(s_dev, pt, lo, hi - lo + 1, count,
                                                 s_qidx, D3DFMT_INDEX16, verts, stride);
+        s_st.draws++;
+        s_st.prims += count;
         return;
     }
     pt = prim_count(xprim, n, &count);
@@ -1578,6 +1653,8 @@ static void draw(uint32_t xprim, uint32_t n, const uint16_t *idx,
                                                 idx, D3DFMT_INDEX16, verts, stride);
     else
         IDirect3DDevice9_DrawPrimitiveUP(s_dev, pt, count, verts, stride);
+    s_st.draws++;
+    s_st.prims += count;
 }
 
 /* -- Present ----------------------------------------------------------------- */
@@ -1712,10 +1789,29 @@ static void present(uint32_t data)
         fit.bottom = fit.top + (LONG)fh;
         IDirect3DDevice9_ColorFill(s_dev, bb, NULL, D3DCOLOR_XRGB(0, 0, 0));
         IDirect3DDevice9_StretchRect(s_dev, r->surf, NULL, bb, &fit, D3DTEXF_LINEAR);
+        s_st.rts = s_nrt; s_st.rts_max = MAX_RT;
+        s_st.texs = s_ntex; s_st.texs_max = MAX_TEX;
+        s_st.vss = s_nvs; s_st.vss_max = MAX_VS;
+        s_st.vdecls = s_nvdecl; s_st.vdecls_max = MAX_VDECL;
+        s_st.scale = s_scale; s_st.sc_w = s_sc_w; s_st.sc_h = s_sc_h; s_st.frame = s_frame;
+        s_st.hd_textures = s_hd_hits;
+        {
+            /* The pointer over the game's menus, in guest 640x480. */
+            POINT pt;
+            int gx = -1, gy = -1;
+            if (GetForegroundWindow() == hwnd && GetCursorPos(&pt) && ScreenToClient(hwnd, &pt)
+                && pt.x >= fit.left && pt.x < fit.right && pt.y >= fit.top && pt.y < fit.bottom) {
+                gx = (int)((pt.x - fit.left) * 640 / (LONG)fw);
+                gy = (int)((pt.y - fit.top) * 480 / (LONG)fh);
+            }
+            mkb_set_menu_cursor(menu_mouse_update(gx, gy));
+        }
+        overlay_present(s_dev, hwnd, bb, &s_st);
         IDirect3DSurface9_Release(bb);
         IDirect3DSwapChain9_Present(s_sc, NULL, NULL, NULL, NULL, 0);
     }
     IDirect3DDevice9_BeginScene(s_dev);
+    memset(&s_st, 0, sizeof s_st);
 }
 
 /* -- Handlers ---------------------------------------------------------------- */

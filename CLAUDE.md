@@ -23,6 +23,8 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 | `analysis/{disasm,func_id,abi}/` | Pipeline output (functions, xrefs, labels, strings, identified functions, ABI). |
 | `src/main.c`, `src/recomp_manual.c` | Host entry point and manual overrides. Made from the xboxrecomp `templates/new-game`. |
 | `src/d3d9_hle.c` | The game's Xbox D3D8 mapped onto host Direct3D 9: wrapped entry points, state translation, textures, render targets, vertex programs, present. |
+| `src/overlay.cpp`, `third_party/imgui/` | F1 debug overlay (D3D9, health, cheats) on vendored Dear ImGui 1.91.8. Game-side helpers (cheats, mouse camera, menu hover) are in `recomp_manual.c`. |
+| `tools/xen_tex.py` | Converts the 360 `.xen` package textures to `game/hd/<hash>.dds` for `RECOMP_HD_TEX`. |
 | `src/recomp/gen/` | Generated lifted C (Phase 2 onward). |
 | `tools/p1_survey.py` | P1 survey (gaps, data pointers, vtables, jump tables, D3D usage, threads). Writes to `analysis/p1/`. |
 | `seeds/` | Seed lists for `tools.disasm --seed-functions`. They hold addresses only. |
@@ -98,6 +100,8 @@ It also turns these on. Set any switch to `0` to turn it off:
 - `RECOMP_HEAP_RECLAIM`: reuse freed contiguous memory. Without it the movies run the arena dry.
 - `RECOMP_SCALE=N` (1 to 8, default 2): D3D9 render targets at N times the guest's 640x480, shown through a swap chain on the framebuffer window.
 
+Keys: F1 opens the debug overlay (D3D9 stats, health, cheats: unlock levels, warp to a level), F2 shows a frame-rate line, F9 releases the mouse. The mouse turns the camera directly and points at menu options.
+
 `main.c` also calls `timeBeginPeriod(1)`. Without it the APU clock oversleeps and audio underruns.
 
 Other useful switches:
@@ -110,8 +114,10 @@ Other useful switches:
 - `RECOMP_D3D9_STATS=1`: presents per second.
 - `RECOMP_D3D_TRACE=N`: logs the first N D3D calls with their register and stack arguments; `RECOMP_D3D_TRACE_ONLY=Name,Name` keeps just those.
 - `RECOMP_D3D9_DUMP_VSH=<dir>`: writes each translated vertex program as HLSL.
+- `RECOMP_MOUSE_DEG=f`: camera degrees per mouse count (default 0.08). `RECOMP_MOUSE_TRACE=1` logs the mouse counts taken each game frame.
+- `RECOMP_HD_TEX=<dir>`: replace textures with `<dir>/<hash>.dds` (360 HD textures from `tools/xen_tex.py <pkg.xbp> <pkg.xen> -o game/hd`).
 
-The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster, plus the P7 fixes: `mkb_input.c` bindings from the ini (`bind.<PAD>=...`), held mouse buttons, generic Shift/Ctrl, and poll-rate-independent mouse aim, and `xbox_FramebufferWindowHwnd` / `xbox_FramebufferWindowExternalPresent` so a back end can present into the framebuffer window, plus the D3D9 fix: `tools.recomp --exclude-manual` can be given more than once.
+The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster, plus the P7 fixes: `mkb_input.c` bindings from the ini (`bind.<PAD>=...`), held mouse buttons, generic Shift/Ctrl, and poll-rate-independent mouse aim, and `xbox_FramebufferWindowHwnd` / `xbox_FramebufferWindowExternalPresent` so a back end can present into the framebuffer window, plus the D3D9 fix: `tools.recomp --exclude-manual` can be given more than once, plus the P8 additions: `mkb_take_mouse_delta`, `mkb_set_suspended` and `mkb_set_menu_cursor` in `mkb_input.c`, and `xbox_FramebufferWindowSetMsgHook` in `fb_present.c`.
 
 ## Debug loop (P3+)
 - **Indirect calls:**

@@ -21,6 +21,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>   /* ptrdiff_t */
+#include <string.h>   /* memcpy */
+#include <windows.h>  /* GetTickCount */
 
 /* ── ICALL trace ring buffer ───────────────────────────────── */
 
@@ -202,4 +204,342 @@ void recomp_unimpl(const char *text, uint32_t va)
 void sub_00064262(void)
 {
     g_esp += 4; /* ret */
+}
+
+/* ── Mouse camera ─────────────────────────────────────────────────────── */
+
+/* All game input reads an analog control through InputManager::GetAnalog
+ * (0x5F480, thiscall (control, filtered, yflag), ret 0xC, float in st0).
+ * Controls 2 and 3 are the camera stick. The cameras turn by
+ * value/32768 * sensitivity * dt * 180 degrees a second (0x2C370), so
+ * returning counts * scale / dt for those two controls turns the camera by
+ * a fixed angle per mouse count, with no deadzone or full-throw cap. The
+ * game's own Invert Camera and sensitivity settings still apply, because
+ * the value goes through its filters (0x5F320, 0x5F3F0).
+ *
+ * Signs: the stick orbits the camera round the King (stick right moves the
+ * camera right, so the view turns left; stick up raises it to look down).
+ * A mouse should turn the view itself, so both axes are negated: mouse
+ * right looks right, mouse up looks up. RECOMP_MOUSE_DEG (default 0.08) is
+ * the degrees per count at the game's middle sensitivity. */
+extern void sub_0005F480_gen(void);
+extern void sub_0005F290(void);
+extern void sub_0005F320(void);
+extern void sub_0005F3F0(void);
+int mkb_take_mouse_delta(long *dx, long *dy);
+
+static long s_mouse_dx, s_mouse_dy;   /* counts in the current game frame */
+static DWORD s_cam_read_ms;           /* last camera-stick read: the King is in play */
+
+/* The game reads the camera stick several times a frame (a test, then the
+ * value) and updates at 30 Hz, half the present rate. So the mouse is taken
+ * once per game frame: when the game clock (0x32A2A4, advanced each frame
+ * by the timer update 0x1A4680) has moved since the last read. */
+static void mouse_frame(void)
+{
+    static uint32_t last_clock;
+    static int trace = -1;
+    uint32_t clock = MEM32(0x32A2A4);
+    if (clock == last_clock)
+        return;
+    last_clock = clock;
+    if (!mkb_take_mouse_delta(&s_mouse_dx, &s_mouse_dy))
+        s_mouse_dx = s_mouse_dy = 0;
+    if (trace < 0)
+        trace = getenv("RECOMP_MOUSE_TRACE") != NULL;
+    if (trace && (s_mouse_dx || s_mouse_dy))
+        fprintf(stderr, "[MOUSE] frame %ld %ld clock=%f dt=%f\n", s_mouse_dx, s_mouse_dy,
+                MEMF(0x32A2A4), MEMF(0x32A29C));
+}
+
+static float mouse_fp_pop(void)
+{
+    float v = (float)g_fp_stack[g_fp_top];
+    g_fp_top = (g_fp_top + 1u) & 7u;
+    return v;
+}
+
+void sub_0005F480(void)
+{
+    static double scale = -1.0;
+    uint32_t self = g_ecx, ctl = MEM32(g_esp + 4), filt = MEM32(g_esp + 8);
+    uint32_t yflag = MEM32(g_esp + 12), phys, bits;
+    long d;
+    float dt = MEMF(0x32A29C), v;      /* the game's frame time, seconds */
+
+    if (ctl == 2 || ctl == 3) {
+        s_cam_read_ms = GetTickCount();
+        mouse_frame();
+    }
+    d = ctl == 2 ? s_mouse_dx : ctl == 3 ? s_mouse_dy : 0;
+
+    if (scale < 0.0) {
+        const char *e = getenv("RECOMP_MOUSE_DEG");
+        double deg = e ? atof(e) : 0.08;
+        scale = (deg > 0.0 ? deg : 0.08) * 32768.0 / 180.0;
+    }
+    if (!d || !(dt > 0.0f)) {
+        sub_0005F480_gen();
+        return;
+    }
+    g_esp += 16;                                   /* ret 0xC */
+    v = (float)(-d * scale / dt);
+    if (!filt) {
+        g_fp_top = (g_fp_top + 7u) & 7u;
+        g_fp_stack[g_fp_top] = v;
+        return;
+    }
+    PUSH32(g_esp, ctl);                            /* remap for swapped sticks */
+    PUSH32(g_esp, 0x0005F4A2u);
+    sub_0005F290();
+    phys = g_eax;
+    memcpy(&bits, &v, 4);
+    PUSH32(g_esp, yflag);                          /* invert */
+    PUSH32(g_esp, bits);
+    PUSH32(g_esp, phys);
+    PUSH32(g_esp, 0x0005F563u);
+    g_ecx = self;
+    sub_0005F320();
+    v = mouse_fp_pop();
+    memcpy(&bits, &v, 4);
+    PUSH32(g_esp, bits);                           /* sensitivity; st0 = result */
+    PUSH32(g_esp, phys);
+    PUSH32(g_esp, 0x0005F574u);
+    g_ecx = self;
+    sub_0005F3F0();
+}
+
+/* ── Debug overlay: game state and cheats (src/overlay.cpp) ───────────── */
+
+#include "overlay.h"
+
+/* Globals found with REA (docs/ROADMAP.md, P8). */
+#define GA_GAMESTATE  0x2E2CCCu   /* GameState*: unlocks, missions, options  */
+#define GA_PAUSE      0x2E2CC0u   /* CMode_Pause*                            */
+#define GA_WORLD      0x2E2CD0u   /* CMode_World*                            */
+#define GA_FRONTEND   0x2E2CD4u   /* the front end's menu owner              */
+#define GA_LEVELS     0x2E2FFCu   /* g_levels[5], filled by RegisterLevel    */
+
+extern void sub_00012710(void);   /* World::RequestLevel(level), thiscall, ret 4 */
+extern void sub_00061A90(void);   /* GameState: unlock everything (unused dev code) */
+
+/* The overlay runs inside hle_Swap, in the middle of the guest's call: a call
+ * into lifted code from there must leave every guest register as it was. */
+typedef struct { uint32_t eax, ecx, edx, ebx, esp, ebp, esi, edi; int fp; } GuestRegs;
+
+static void regs_save(GuestRegs *r)
+{
+    r->eax = g_eax; r->ecx = g_ecx; r->edx = g_edx; r->ebx = g_ebx;
+    r->esp = g_esp; r->ebp = g_ebp; r->esi = g_esi; r->edi = g_edi;
+    r->fp = g_fp_top;
+}
+
+static void regs_restore(const GuestRegs *r)
+{
+    g_eax = r->eax; g_ecx = r->ecx; g_edx = r->edx; g_ebx = r->ebx;
+    g_esp = r->esp; g_ebp = r->ebp; g_esi = r->esi; g_edi = r->edi;
+    g_fp_top = r->fp;
+}
+
+static int game_paused(void)
+{
+    uint32_t p = MEM32(GA_PAUSE);
+    return p && MEM8(p + 0x1A69);
+}
+
+void game_info(OverlayGameInfo *gi)
+{
+    uint32_t gs = MEM32(GA_GAMESTATE), w = MEM32(GA_WORLD);
+    int i;
+
+    memset(gi, 0, sizeof *gi);
+    gi->gamestate = gs;
+    if (gs) {
+        gi->flags = MEM32(gs + 0xA4);
+        for (i = 0; i < 4; i++)
+            gi->missions[i] = MEM32(gs + 0x20 + i * 0x20);
+    }
+    gi->world = w;
+    if (w) {
+        gi->world_state = MEM32(w + 0x1A68);
+        gi->level = MEM32(w + 0x1A64);
+    }
+    for (i = 0; i < OVERLAY_LEVELS; i++) {
+        gi->levels[i] = MEM32(GA_LEVELS + 4 * i);
+        gi->level_type[i] = gi->levels[i] && MEM32(gi->levels[i] + 0xD0)
+                         ? MEM32(MEM32(gi->levels[i] + 0xD0) + 0x50) : 0xFFFFFFFFu;
+    }
+    gi->paused = game_paused();
+    gi->in_play = GetTickCount() - s_cam_read_ms < 500;
+}
+
+void game_cheat_unlock_levels(void)
+{
+    uint32_t gs = MEM32(GA_GAMESTATE);
+    if (gs)
+        MEM32(gs + 0xA4) |= 0xF;
+}
+
+void game_cheat_unlock_all(void)
+{
+    GuestRegs r;
+    uint32_t gs = MEM32(GA_GAMESTATE);
+    if (!gs)
+        return;
+    regs_save(&r);
+    PUSH32(g_esp, 0x00061AFDu);
+    g_ecx = gs;
+    sub_00061A90();
+    regs_restore(&r);
+}
+
+/* The same request TeleportToLevel (0x28490) makes, without closing a pause
+ * menu first: the overlay offers it only during play. */
+void game_cheat_warp(int slot)
+{
+    GuestRegs r;
+    uint32_t w = MEM32(GA_WORLD), lvl;
+    if (slot < 0 || slot >= OVERLAY_LEVELS || !w || game_paused()
+        || GetTickCount() - s_cam_read_ms >= 500)
+        return;
+    lvl = MEM32(GA_LEVELS + 4 * slot);
+    if (!lvl)
+        return;
+    regs_save(&r);
+    PUSH32(g_esp, lvl);
+    PUSH32(g_esp, 0x000284C7u);
+    g_ecx = w;
+    sub_00012710();
+    regs_restore(&r);
+}
+
+/* ── Mouse over the game's menus ──────────────────────────────────────── */
+
+/* A menu page (MenuPage, ctor 0x29240) is a scene node whose children are
+ * MenuOptions (ctor 0x29010). An option has no position: what is drawn is
+ * its 2D-element children (node type 0x15, ctor 0x184100), each with a box
+ * (W, H, anchor) and a world matrix. The screen rect below is the engine's
+ * own, from its scissor code (0x16ABA0). Hovering an option focuses it the
+ * way the d-pad does (0x282A0, which also plays the move sound); the click
+ * is already bound to A in mkb.ini. */
+extern void sub_000282A0(void);   /* focus item on the active page, cdecl */
+
+#define NODE_CHILD(n)   MEM32((n) + 0x38)
+#define NODE_NEXT(n)    MEM32((n) + 0x2C)
+#define NODE_TYPE(n)    MEM8((n) + 0x94)
+
+typedef struct { float l, t, r, b; int any; } MenuRect;
+
+static int menu_is_option(uint32_t n)
+{
+    uint32_t vt = MEM32(n);
+    return vt == 0x2B20D0u || vt == 0x2B2750u || vt == 0x2B2898u;
+}
+
+/* An element's box in the guest's screen pixels. */
+static void menu_elem_rect(uint32_t e, MenuRect *u)
+{
+    uint32_t disp = MEM32(0x32A224);
+    float w = MEMF(e + 0x100), h = MEMF(e + 0x104);
+    float ax = MEMF(e + 0x108), ay = MEMF(e + 0x10C);
+    float x[2], y[2], hw, hh, mnx = 1e9f, mxx = -1e9f, mny = 1e9f, mxy = -1e9f;
+    int i;
+
+    if (!disp || !(MEM32(e + 0x40) & 0x200) || !(w >= 1.0f) || !(h >= 1.0f))
+        return;
+    hw = MEMF(disp + 0x7C);
+    hh = MEMF(disp + 0x80);
+    x[0] = -ax * w; x[1] = (1.0f - ax) * w;
+    y[0] = (ay - 1.0f) * h; y[1] = ay * h;
+    for (i = 0; i < 4; i++) {
+        float cx = x[i & 1], cy = y[i >> 1];
+        float X = cx * MEMF(e + 0xC0) + cy * MEMF(e + 0xD0) + MEMF(e + 0xF0);
+        float Y = cx * MEMF(e + 0xC4) + cy * MEMF(e + 0xD4) + MEMF(e + 0xF4);
+        if (X < mnx) mnx = X;
+        if (X > mxx) mxx = X;
+        if (Y < mny) mny = Y;
+        if (Y > mxy) mxy = Y;
+    }
+    mnx += hw; mxx += hw;
+    { float t = hh - mxy, b = hh - mny; mny = t; mxy = b; }
+    if (!u->any || mnx < u->l) u->l = mnx;
+    if (!u->any || mxx > u->r) u->r = mxx;
+    if (!u->any || mny < u->t) u->t = mny;
+    if (!u->any || mxy > u->b) u->b = mxy;
+    u->any = 1;
+}
+
+/* The union of an option's visible 2D elements, two levels down. */
+static void menu_option_rect(uint32_t n, MenuRect *u, int depth)
+{
+    uint32_t first = NODE_CHILD(n), c = first;
+    int guard = 0;
+    while (c && guard++ < 64) {
+        if (NODE_TYPE(c) == 0x15)
+            menu_elem_rect(c, u);
+        if (depth < 2)
+            menu_option_rect(c, u, depth + 1);
+        c = NODE_NEXT(c);
+        if (c == first)
+            break;
+    }
+}
+
+/* The option under (x, y) in guest pixels, searching the page's subtree. */
+static uint32_t menu_hit(uint32_t n, float x, float y, int depth)
+{
+    uint32_t first = NODE_CHILD(n), c = first, hit;
+    int guard = 0;
+    while (c && guard++ < 128) {
+        if (menu_is_option(c)) {
+            MenuRect r = { 0 };
+            menu_option_rect(c, &r, 0);
+            if (r.any && x >= r.l && x < r.r && y >= r.t && y < r.b)
+                return c;
+        } else if (depth < 4 && (hit = menu_hit(c, x, y, depth + 1)) != 0) {
+            return hit;
+        }
+        c = NODE_NEXT(c);
+        if (c == first)
+            break;
+    }
+    return 0;
+}
+
+static uint32_t menu_active_page(void)
+{
+    uint32_t p = MEM32(GA_PAUSE), fe = MEM32(GA_FRONTEND), page = 0;
+    if (p && MEM8(p + 0x1A69))
+        page = MEM32(p + 0x1A70);
+    else if (fe)
+        page = MEM32(fe + 0xE8);
+    return page && MEM8(page + 0x2A4) ? page : 0;
+}
+
+int menu_mouse_update(int x, int y)
+{
+    static int last_x = -1, last_y = -1;
+    uint32_t page = menu_active_page(), disp = MEM32(0x32A224), item;
+    float gx, gy;
+    GuestRegs r;
+
+    if (!page || !disp)
+        return 0;
+    /* Only a moving pointer takes the focus, so the keys still work while
+     * it rests over an option. */
+    if (x < 0 || (x == last_x && y == last_y))
+        return 1;
+    last_x = x;
+    last_y = y;
+    gx = x * (float)(int32_t)MEM32(disp + 0x5C) / 640.0f;
+    gy = y * (float)(int32_t)MEM32(disp + 0x60) / 480.0f;
+    item = menu_hit(page, gx, gy, 0);
+    if (item && !MEM8(item + 0xE4)) {
+        regs_save(&r);
+        PUSH32(g_esp, item);
+        PUSH32(g_esp, 0x00028B90u);
+        sub_000282A0();
+        regs_restore(&r);
+    }
+    return 1;
 }

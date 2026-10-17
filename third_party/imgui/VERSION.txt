@@ -1,0 +1,1 @@
+Dear ImGui v1.91.8 (ocornut/imgui dbb5eeaadffb6a3ba6a60de1290312e5802dba5a): core plus the dx9 and win32 backends, unmodified. MIT, see LICENSE.txt.

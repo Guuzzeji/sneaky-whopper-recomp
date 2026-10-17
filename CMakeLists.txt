@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.20)
 #   4. Add any game-specific compile definitions or link libraries
 # ============================================================================
 
-project(sneakking_recomp C)
+project(sneakking_recomp C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -53,6 +53,14 @@ set(GAME_SOURCES
     src/main.c
     src/recomp_manual.c
     src/d3d9_hle.c
+    # The F1/F2 debug overlay, on the vendored Dear ImGui.
+    src/overlay.cpp
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/imgui_impl_dx9.cpp
+    third_party/imgui/imgui_impl_win32.cpp
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c
@@ -79,6 +87,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${XBOXRECOMP_DIR}/include
     # d3d9_hle.c: the toolkit's swizzle helpers.
     ${XBOXRECOMP_DIR}/src/d3d
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
 )
 
 # Windows SDK libraries needed at link time
@@ -91,6 +100,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     dbghelp
     # d3d9_hle.c compiles the title's vertex programs at run time.
     d3dcompiler
+    # overlay.cpp: the thread table and working set.
+    psapi
 )
 
 # MSVC-specific: large address aware, increase section limit for big generated files
