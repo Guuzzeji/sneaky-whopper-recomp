@@ -73,24 +73,27 @@ Run these from `C:\repos\xboxrecomp`, with `$py` set to the venv Python, `$x` to
 & $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir C:\repos\sneak-king-recomp\src\recomp\gen --game-name "Sneak King" --exclude-manual C:\repos\sneak-king-recomp\src\recomp_manual.c
 ```
 
-Build from the repo root inside the vcvars wrapper. Keep parallelism low, because the generated files are huge:
+Build from the repo root inside the vcvars wrapper. Keep parallelism low, because the generated files are huge. `CMakePresets.json` holds the settings (Ninja, 2 jobs): `release` builds `build\sneakking_recomp.exe`, `relwithdebinfo` builds an optimised exe with a PDB in `out\build\relwithdebinfo` (an unoptimised build of the generated code is too slow to play):
 
 ```
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel 2
+cmake --preset release && cmake --build --preset release
 ```
 
-Run the exe from the repo root, because `main.c` uses the relative paths `game\default.xbe` and `game`.
+**IDEs.** Visual Studio 2022: File > Open > Folder on the repo root, pick a preset in the toolbar, then F5. VS Code: needs the CMake Tools and C/C++ extensions; `.vscode/settings.json` makes CMake Tools use the presets, and the "Sneak King" launch configuration in `.vscode/launch.json` debugs the selected build (set `RECOMP_*` switches in its `environment`). Started without redirected output, the exe opens a console for its log.
 
-Run it with `RECOMP_AC97_READY=1`, `RECOMP_PB_EXEC=1` and `RECOMP_FB_WINDOW=1`:
-- Without the first, DirectSound init fails and the game shuts itself down.
-- Without the second, nothing writes the D3D fence semaphore.
-- Without the third, nothing is visible.
+The exe finds the repo root itself: when `game\default.xbe` is not in the working directory, `main.c` walks up from the exe's folder to the one that holds it and works from there (`game\`, `mkb.ini` and `nv2a_shaders.bin` are relative to it).
 
-`main.c` turns these on by default; set any of them to `0` to turn it off:
+`main.c` turns on everything a normal run needs, so the exe runs with no switches set:
+- `RECOMP_AC97_READY`: without it, DirectSound init fails and the game shuts itself down.
+- `RECOMP_PB_EXEC`: without it, nothing writes the D3D fence semaphore.
+- `RECOMP_FB_WINDOW`: without it, nothing is visible.
+
+It also turns these on. Set any switch to `0` to turn it off:
 - `RECOMP_VBLANK`: the XMV player times frames by vblank.
-- `RECOMP_USB` and `RECOMP_KEYBOARD`: the pad on the emulated OHCI bus, and the keyboard as a pad on port 0 (Enter is START, Z is A, X is B, arrows are the D-pad; the full map is in the toolkit's `src/input/README.md`).
+- `RECOMP_USB` and `RECOMP_MKB`: the pad on the emulated OHCI bus, and keyboard and mouse as a pad on port 0 (raw input, toolkit `src/input/mkb_input.c`). The bindings are in `mkb.ini` at the repo root (`RECOMP_MKB_INI` moves it): WASD move, mouse camera, Shift run, left click or Space A, right click or Q B, E Y, wheel zoom, F first person, Escape START, arrows and Enter for menus. F9 releases the mouse. `RECOMP_MKB=0` falls back to the keyboard-only `RECOMP_KEYBOARD` pad.
 - `RECOMP_HEAP_RECLAIM`: reuse freed contiguous memory. Without it the movies run the arena dry.
 - `RECOMP_D3D11`: rasterise on the host GPU (`src/d3d11_backend.c`). `RECOMP_D3D11=0` uses the software rasteriser.
+- `RECOMP_SCALE=N` (1 to 8, default 2): D3D11 render targets at N times the guest's 640x480, shown through a swap chain on the framebuffer window. Guest memory still gets the frame at 1x, so the frame dumps stay 640x480.
 
 `main.c` also calls `timeBeginPeriod(1)`. Without it the APU clock oversleeps and audio underruns.
 
@@ -102,8 +105,9 @@ Other useful switches:
 - `RECOMP_PAD_LIVE=<file>`: each line appended to the file is a pad press (`start:200`, `down`, `a`, `b`). `RECOMP_PAD_SCRIPT=<ms>:<button>,...` is the same on a timeline. With `RECOMP_FB_DUMP=<prefix>` and `RECOMP_FB_WINDOW_DUMP_EVERY=<frames>`, this drives the menus with no one at the keyboard. START skips the movies.
 - `RECOMP_APU_TRACE=1`: per-voice audio stats once a second. `RECOMP_AUDIO_WAV=<path>` records the output.
 - `RECOMP_D3D11_STATS=1`: flips per second.
+- D3D11 debugger overlay: F1 toggles it, F2 shows each render target in turn, F3 wireframe, F4 bypasses the register combiners. `RECOMP_D3D11_DEBUG=1` creates the device with the debug layer (needs the Windows Graphics Tools feature), turns the overlay on, and prints the layer's messages.
 
-The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster.
+The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster, plus the P7 fixes: `mkb_input.c` bindings from the ini (`bind.<PAD>=...`), held mouse buttons, generic Shift/Ctrl, and poll-rate-independent mouse aim, and `xbox_FramebufferWindowHwnd` / `xbox_FramebufferWindowExternalPresent` so a back end can present into the framebuffer window.
 
 ## Debug loop (P3+)
 - **Indirect calls:**

@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Sneak King",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "cwd": "${workspaceFolder}",
+      // The RECOMP_* switches (CLAUDE.md), e.g.
+      // { "name": "RECOMP_SCALE", "value": "3" }, { "name": "RECOMP_D3D11_DEBUG", "value": "1" }
+      "environment": []
+    }
+  ]
+}

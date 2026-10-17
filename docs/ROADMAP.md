@@ -192,7 +192,9 @@ Starts once P5 is complete, because input is what gets the game past "Press STAR
 - [ ] Performance target is a locked 60 fps. Profile the hot generated functions.
 - [ ] Quality of life:
   - [ ] Windowed and fullscreen.
-  - [ ] Resolution scaling.
+  - [x] Resolution scaling. `RECOMP_SCALE=N` (default 2) renders every target at N times the guest surface and presents it through a D3D11 swap chain on the resizable window.
+  - [x] Keyboard and mouse for gameplay and menus: the toolkit's raw-input layer (`mkb_input.c`), bound for this game in `mkb.ini`.
+  - [x] On-screen D3D11 debugger (F1): frame cost, caches, render targets, debug-layer messages (`RECOMP_D3D11_DEBUG=1`); F2 views each target, F3 wireframe, F4 bypasses the combiners.
   - [ ] Controller remapping.
 - [ ] Optional: the Linux/macOS build through xboxrecomp's OpenGL 3.3 + SDL2 path.
 - [ ] Distribution model: ship code only. The player supplies their own disc dump, and game data is never bundled.

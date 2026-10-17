@@ -24,11 +24,24 @@
  * blend, alpha test, depth and stencil (nv2a_backend.h).
  *
  * RECOMP_D3D11=0 turns it off and the software rasteriser draws as before.
+ *
+ * Higher resolution (RECOMP_SCALE=N, default 2): every render target and
+ * depth buffer is N times the guest surface in each direction. Vertices
+ * arrive in guest pixels and the viewport does the scaling, so nothing else
+ * changes. Guest memory still gets the frame, box-filtered down to its own
+ * size (rt_readback), and what the window shows comes straight from the
+ * scaled target through a swap chain on the framebuffer window (present).
+ *
+ * The overlay (F1) is the D3D11 debugger: frame timings, what the back end
+ * did this frame, its caches, every render target, and the debug layer's
+ * messages (RECOMP_D3D11_DEBUG=1). F2 shows each render target in turn, F3
+ * draws wireframe, F4 bypasses the register combiners (texel * diffuse).
  */
 #define COBJMACROS
 #include <windows.h>
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -39,6 +52,14 @@
 #include "d3d8_swizzle.h"
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
+extern void *xbox_FramebufferWindowHwnd(void);
+extern void xbox_FramebufferWindowExternalPresent(int on);
+extern int xbox_FramebufferKeyDown(int vk);
+
+static uint32_t s_scale = 1;    /* render targets are this many times the guest's */
+
+/* F1..F4, read at the flip. */
+static struct { int overlay, view, wire, no_rc; } s_dbg;
 
 static ID3D11Device *s_dev;
 static ID3D11DeviceContext *s_ctx;
@@ -50,10 +71,11 @@ static UINT s_vb_bytes, s_vb_pos;
 
 /* RECOMP_D3D11_STATS: what the executor thread spends its time on here.
  * Counts and QPC ticks, printed with the flip rate. */
-static struct {
+typedef struct {
     uint32_t readbacks, uploads, decodes, hashes, draws;
     LONGLONG t_readback, t_upload, t_tex, t_draw, t_vb, t_cb;
-} s_st;
+} Stats;
+static Stats s_st;
 
 static LONGLONG qpc(void)
 {
@@ -67,26 +89,87 @@ static uint8_t *guest(uint32_t va)
     return (uint8_t *)(xbox_GetMemoryOffset() + (ptrdiff_t)va);
 }
 
+/* ---- blits ------------------------------------------------------------- */
+
+/* One textured triangle over the viewport: scaling a surface up after an
+ * upload, down before a readback, onto the swap chain, and the overlay.
+ * alpha < 0 keeps the texel's alpha (guest pixels); otherwise it is the
+ * output alpha, blended over what is there when below 1. umax, vmax: how
+ * much of the source to read (1, 1: all of it). */
+static const char s_blit_hlsl[] =
+"cbuffer B : register(b0) { float4 bk; };\n"
+"Texture2D bt : register(t0); SamplerState bs : register(s0);\n"
+"void vs(uint id : SV_VertexID, out float4 p : SV_Position, out float2 uv : TEXCOORD0) {\n"
+"  uv = float2((id << 1) & 2, id & 2); p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }\n"
+"float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
+"  float4 c = bt.Sample(bs, uv * bk.yz); return bk.x < 0 ? c : float4(c.rgb, bk.x); }\n";
+
+static ID3D11VertexShader *s_blit_vs;
+static ID3D11PixelShader *s_blit_ps;
+static ID3D11Buffer *s_blit_cb;
+static ID3D11SamplerState *s_point, *s_linear;
+static ID3D11BlendState *s_over;
+
+static void blit(ID3D11ShaderResourceView *src, ID3D11RenderTargetView *dst,
+                 float x, float y, float w, float h, int linear, float alpha, float umax, float vmax)
+{
+    D3D11_VIEWPORT vp = { x, y, w, h, 0.0f, 1.0f };
+    float k[4] = { alpha, umax, vmax, 0 };
+    ID3D11ShaderResourceView *none = NULL;
+
+    ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_blit_cb, 0, NULL, k, 0, 0);
+    /* The target first: it unbinds a surface the last draw left bound as a
+     * target, which is what src may be. */
+    ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &dst, NULL);
+    ID3D11DeviceContext_OMSetBlendState(s_ctx, alpha >= 0 && alpha < 1 ? s_over : NULL,
+                                        NULL, 0xFFFFFFFF);
+    ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, NULL, 0);
+    ID3D11DeviceContext_RSSetState(s_ctx, NULL);
+    ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
+    ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
+    ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D11DeviceContext_VSSetShader(s_ctx, s_blit_vs, NULL, 0);
+    ID3D11DeviceContext_PSSetShader(s_ctx, s_blit_ps, NULL, 0);
+    ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_blit_cb);
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &src);
+    ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 1, linear ? &s_linear : &s_point);
+    ID3D11DeviceContext_Draw(s_ctx, 3, 0);
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &none);
+}
+
 /* ---- colour surfaces --------------------------------------------------- */
 
+/* tex is the surface at s_scale. With a scale above 1, lo is the same
+ * surface at guest size: uploads land there and are scaled up into tex,
+ * readbacks are scaled down into it and copied out through staging. */
 typedef struct {
-    uint32_t va, pitch, bpp, fmt, w, h;
-    ID3D11Texture2D *tex, *staging;
-    ID3D11RenderTargetView *rtv;
+    uint32_t va, pitch, bpp, fmt, w, h;     /* w, h: guest pixels */
+    ID3D11Texture2D *tex, *staging, *lo;
+    ID3D11RenderTargetView *rtv, *lo_rtv;
+    ID3D11ShaderResourceView *srv, *lo_srv;
+    uint64_t hash;          /* guest memory as the last readback left it */
     int valid;              /* the GPU copy matches guest memory */
     int dirty;              /* the GPU copy is newer than guest memory */
 } Rt;
 
 #define MAX_RT 16
 static Rt s_rt[MAX_RT];
+static Rt *s_last_rt;       /* drawn into last: the frame a flip shows */
 
 static void rt_release(Rt *r)
 {
+    if (r == s_last_rt) s_last_rt = NULL;
     if (r->rtv) ID3D11RenderTargetView_Release(r->rtv);
+    if (r->srv) ID3D11ShaderResourceView_Release(r->srv);
     if (r->tex) ID3D11Texture2D_Release(r->tex);
     if (r->staging) ID3D11Texture2D_Release(r->staging);
+    if (r->lo_rtv) ID3D11RenderTargetView_Release(r->lo_rtv);
+    if (r->lo_srv) ID3D11ShaderResourceView_Release(r->lo_srv);
+    if (r->lo) ID3D11Texture2D_Release(r->lo);
     memset(r, 0, sizeof *r);
 }
+
+static uint64_t hash_bytes(const uint8_t *p, uint32_t n);
 
 /* 16-bit surface pixels to and from B8G8R8A8. Formats 1 and 2 are X1R5G5B5,
  * 3 and 0xA R5G6B5. */
@@ -111,13 +194,27 @@ static uint16_t px32_to_16(uint32_t p, uint32_t fmt)
     return (uint16_t)(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
 }
 
+/* Guest memory into the GPU copy, unless it is still what the last readback
+ * or upload left there: the GPU copy is then already right, and at a scale
+ * above 1 it holds more than guest memory can, which a fresh upload would
+ * throw away for a blurred copy of itself (a frame drawn without a colour
+ * clear builds on the last one). */
 static void rt_upload(Rt *r)
 {
     const uint8_t *src = guest(r->va);
+    ID3D11Texture2D *dst = r->lo ? r->lo : r->tex;
     LONGLONG t0 = qpc();
+    uint64_t h = hash_bytes(src, r->pitch * r->h);
+
+    if (h == r->hash) {
+        r->valid = 1;
+        r->dirty = 0;
+        return;
+    }
+    r->hash = h;
     s_st.uploads++;
     if (r->bpp == 4) {
-        ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)r->tex,
+        ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)dst,
                                               0, NULL, src, r->pitch, 0);
     } else {
         uint32_t *tmp = (uint32_t *)malloc((size_t)r->w * r->h * 4), x, y;
@@ -128,10 +225,12 @@ static void rt_upload(Rt *r)
             for (x = 0; x < r->w; x++)
                 tmp[(size_t)y * r->w + x] = px16_to_32(row[x], r->fmt);
         }
-        ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)r->tex,
+        ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)dst,
                                               0, NULL, tmp, r->w * 4, 0);
         free(tmp);
     }
+    if (r->lo)
+        blit(r->lo_srv, r->rtv, 0, 0, (float)(r->w * s_scale), (float)(r->h * s_scale), 0, -1, 1, 1);
     r->valid = 1;
     r->dirty = 0;
     s_st.t_upload += qpc() - t0;
@@ -150,8 +249,12 @@ static void rt_readback(Rt *r)
         return;
     t0 = qpc();
     s_st.readbacks++;
+    /* Down to guest size. Bilinear at the centre of each 2x2 block is the
+     * box filter; at 3x and up it is the nearest few texels. */
+    if (r->lo)
+        blit(r->srv, r->lo_rtv, 0, 0, (float)r->w, (float)r->h, 1, -1, 1, 1);
     ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)r->staging,
-                                     (ID3D11Resource *)r->tex);
+                                     (ID3D11Resource *)(r->lo ? r->lo : r->tex));
     if (FAILED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)r->staging, 0,
                                        D3D11_MAP_READ, 0, &m)))
         return;
@@ -167,6 +270,7 @@ static void rt_readback(Rt *r)
     }
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)r->staging, 0);
     r->dirty = 0;
+    r->hash = hash_bytes(dst, r->pitch * r->h);
     tex_touched(r->va, r->pitch * r->h);
     s_st.t_readback += qpc() - t0;
 }
@@ -216,22 +320,32 @@ static Rt *rt_get(const Nv2aSurface *s)
     }
 
     memset(&td, 0, sizeof td);
-    td.Width = w;
-    td.Height = h;
+    td.Width = w * s_scale;
+    td.Height = h * s_scale;
     td.MipLevels = 1;
     td.ArraySize = 1;
     td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
     if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &r->tex)))
         return NULL;
+    ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)r->tex, NULL, &r->rtv);
+    ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)r->tex, NULL, &r->srv);
+    td.Width = w;
+    td.Height = h;
+    if (s_scale > 1) {
+        ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &r->lo);
+        if (r->lo) {
+            ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)r->lo, NULL, &r->lo_rtv);
+            ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)r->lo, NULL, &r->lo_srv);
+        }
+    }
     td.Usage = D3D11_USAGE_STAGING;
     td.BindFlags = 0;
     td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &r->staging);
-    ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)r->tex, NULL, &r->rtv);
-    if (!r->staging || !r->rtv) {
+    if (!r->staging || !r->rtv || !r->srv || (s_scale > 1 && (!r->lo_rtv || !r->lo_srv))) {
         rt_release(r);
         return NULL;
     }
@@ -761,11 +875,11 @@ static const char s_hlsl[] =
 "  if (!ok) discard; return c; }\n"
 "#endif\n";
 
-static int compile(const char *entry, const char *target,
-                   const D3D_SHADER_MACRO *defs, ID3DBlob **out)
+static int compile_src(const char *src, size_t len, const char *entry, const char *target,
+                       const D3D_SHADER_MACRO *defs, ID3DBlob **out)
 {
     ID3DBlob *err = NULL;
-    HRESULT hr = D3DCompile(s_hlsl, sizeof s_hlsl - 1, "nv2a_backend", defs, NULL,
+    HRESULT hr = D3DCompile(src, len, "nv2a_backend", defs, NULL,
                             entry, target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, out, &err);
     if (FAILED(hr)) {
         fprintf(stderr, "[D3D11] %s: %s\n", entry,
@@ -774,6 +888,55 @@ static int compile(const char *entry, const char *target,
         return 0;
     }
     return 1;
+}
+
+static int compile(const char *entry, const char *target,
+                   const D3D_SHADER_MACRO *defs, ID3DBlob **out)
+{
+    return compile_src(s_hlsl, sizeof s_hlsl - 1, entry, target, defs, out);
+}
+
+/* The blit shaders and their fixed state. */
+static int blit_init(void)
+{
+    ID3DBlob *b = NULL;
+    D3D11_BUFFER_DESC cbd;
+    D3D11_SAMPLER_DESC sd;
+    D3D11_BLEND_DESC bd;
+
+    if (!compile_src(s_blit_hlsl, sizeof s_blit_hlsl - 1, "vs", "vs_4_0", NULL, &b))
+        return 0;
+    ID3D11Device_CreateVertexShader(s_dev, ID3D10Blob_GetBufferPointer(b),
+                                    ID3D10Blob_GetBufferSize(b), NULL, &s_blit_vs);
+    ID3D10Blob_Release(b);
+    if (!compile_src(s_blit_hlsl, sizeof s_blit_hlsl - 1, "ps", "ps_4_0", NULL, &b))
+        return 0;
+    ID3D11Device_CreatePixelShader(s_dev, ID3D10Blob_GetBufferPointer(b),
+                                   ID3D10Blob_GetBufferSize(b), NULL, &s_blit_ps);
+    ID3D10Blob_Release(b);
+    memset(&cbd, 0, sizeof cbd);
+    cbd.ByteWidth = 16;
+    cbd.Usage = D3D11_USAGE_DEFAULT;
+    cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    ID3D11Device_CreateBuffer(s_dev, &cbd, NULL, &s_blit_cb);
+    memset(&sd, 0, sizeof sd);
+    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    ID3D11Device_CreateSamplerState(s_dev, &sd, &s_point);
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    ID3D11Device_CreateSamplerState(s_dev, &sd, &s_linear);
+    memset(&bd, 0, sizeof bd);
+    bd.RenderTarget[0].BlendEnable = TRUE;
+    bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+    bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    ID3D11Device_CreateBlendState(s_dev, &bd, &s_over);
+    return s_blit_vs && s_blit_ps && s_blit_cb && s_point && s_linear && s_over;
 }
 
 /* The pixel shader for one combiner program, compiled on first use, found by
@@ -974,16 +1137,18 @@ static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
         /* ponytail: a partial colour-channel clear clears all four. */
         float c[4] = { ((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f,
                        (argb & 0xFF) / 255.0f, (argb >> 24) / 255.0f };
-        D3D11_RECT rc = { (LONG)s->clip_x, (LONG)s->clip_y,
-                          (LONG)(s->clip_x + s->width), (LONG)(s->clip_y + s->height) };
+        D3D11_RECT rc = { (LONG)(s->clip_x * s_scale), (LONG)(s->clip_y * s_scale),
+                          (LONG)((s->clip_x + s->width) * s_scale),
+                          (LONG)((s->clip_y + s->height) * s_scale) };
         if (s_ctx1)
             ID3D11DeviceContext1_ClearView(s_ctx1, (ID3D11View *)r->rtv, c, &rc, 1);
         else
             ID3D11DeviceContext_ClearRenderTargetView(s_ctx, r->rtv, c);
         r->dirty = 1;
+        s_last_rt = r;
     }
     if (flags & 0x3) {
-        Ds *d = ds_get(rs->zeta_va, r->w, r->h);
+        Ds *d = ds_get(rs->zeta_va, r->w * s_scale, r->h * s_scale);
         if (d) {
             /* Z24S8: depth in the top 24 bits; Z16: the low 16. */
             float z = rs->zeta_format == 1 ? (float)(zstencil & 0xFFFF) / 65536.0f
@@ -1026,13 +1191,13 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     s_st.draws++;
     /* With combiners every enabled stage samples; without, stage 0 alone. */
     for (st = 0; st < 4; st++) {
-        tx[st] = b->rc ? b->stages[st] : (st == 0 ? b->texture : NULL);
+        tx[st] = b->rc && !s_dbg.no_rc ? b->stages[st] : (st == 0 ? b->texture : NULL);
         if (tx[st])
             srv[st] = tex_get(tx[st]);    /* may read back a target: before binding */
     }
     s_st.t_tex += qpc() - t0;
     if (rs->zeta_va && (rs->depth_test_enable || rs->depth_write || rs->stencil_enable))
-        d = ds_get(rs->zeta_va, r->w, r->h);
+        d = ds_get(rs->zeta_va, r->w * s_scale, r->h * s_scale);
 
     /* Vertices: appended to a ring, NO_OVERWRITE until it wraps. A DISCARD
      * on every draw made the driver rename the buffer ~3,600 times a second
@@ -1083,7 +1248,7 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
         k.tb[st] = srv[st] != NULL;
     memset(k.fac, 0, sizeof k - offsetof(Consts, fac));
     memset(&pk, 0, sizeof pk);
-    if (b->rc) {
+    if (b->rc && !s_dbg.no_rc) {
         const Nv2aCombiner *c = b->rc;
         int i, n = (int)(c->control & 0xFF) < 8 ? (int)(c->control & 0xFF) : 8;
         for (i = 0; i < 8; i++) {
@@ -1148,7 +1313,7 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
      * hides anyway. Map cull_face/front_face once a 3D scene shows the
      * difference. */
     memset(&rd, 0, sizeof rd);
-    rd.FillMode = D3D11_FILL_SOLID;
+    rd.FillMode = s_dbg.wire ? D3D11_FILL_WIREFRAME : D3D11_FILL_SOLID;
     rd.CullMode = D3D11_CULL_NONE;
     /* Depth clipping on, and the shader clamps z at 1 only: geometry nearer
      * than the near plane (z < 0) is cut away, as on the NV2A. Clamped to 0
@@ -1158,10 +1323,11 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     rd.ScissorEnable = TRUE;
 
     vp.TopLeftX = 0; vp.TopLeftY = 0;
-    vp.Width = (float)r->w; vp.Height = (float)r->h;
+    vp.Width = (float)(r->w * s_scale); vp.Height = (float)(r->h * s_scale);
     vp.MinDepth = 0; vp.MaxDepth = 1;
-    sc.left = (LONG)s->clip_x; sc.top = (LONG)s->clip_y;
-    sc.right = (LONG)(s->clip_x + s->width); sc.bottom = (LONG)(s->clip_y + s->height);
+    sc.left = (LONG)(s->clip_x * s_scale); sc.top = (LONG)(s->clip_y * s_scale);
+    sc.right = (LONG)((s->clip_x + s->width) * s_scale);
+    sc.bottom = (LONG)((s->clip_y + s->height) * s_scale);
 
     ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &r->rtv, d ? d->dsv : NULL);
     ID3D11DeviceContext_OMSetBlendState(s_ctx, s_blend_get(&bd), bf, 0xFFFFFFFF);
@@ -1199,15 +1365,351 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     }
     ID3D11DeviceContext_Draw(s_ctx, b->count, first);
     r->dirty = 1;
+    s_last_rt = r;
     s_st.t_draw += qpc() - t0;
 }
 
-/* The frame is done: write every target back to guest memory, where the
- * window and the dumps read it, and treat guest memory as the truth again
- * next frame (the title may write a surface with the CPU in between). */
+/* ---- the window: swap chain and overlay -------------------------------- */
+
+static IDXGISwapChain1 *s_sc;
+static ID3D11RenderTargetView *s_bb;
+static UINT s_bb_w, s_bb_h;
+static ID3D11InfoQueue *s_iq;   /* RECOMP_D3D11_DEBUG=1 */
+
+/* The overlay: text drawn by GDI into a DIB, uploaded, and blended over the
+ * frame. Plain GDI because it is already there, and the overlay is a debug
+ * aid rather than something a frame should be built around. */
+#define OV_W 720
+#define OV_H 400
+#define OV_LINE 15
+static HDC s_ov_dc;
+static int s_ov_wmax;       /* widest line this frame, pixels */
+static uint32_t *s_ov_px;
+static ID3D11Texture2D *s_ov_tex;
+static ID3D11ShaderResourceView *s_ov_srv;
+
+static struct {
+    double ms;                  /* flip to flip, smoothed */
+    LONGLONG t_last;
+    uint32_t iq_total;          /* debug layer messages so far */
+    char iq_last[2][128];       /* the latest two */
+} s_ov;
+
+/* What the frame just shown cost: the counters' change since the last flip,
+ * when they were s_fr. */
+static Stats s_fr, s_fd;
+
+static int ov_init(void)
+{
+    BITMAPINFO bi;
+    HBITMAP bmp;
+    HFONT font;
+    D3D11_TEXTURE2D_DESC td;
+
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = OV_W;
+    bi.bmiHeader.biHeight = -OV_H;             /* top-down */
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    s_ov_dc = CreateCompatibleDC(NULL);
+    bmp = s_ov_dc ? CreateDIBSection(s_ov_dc, &bi, DIB_RGB_COLORS, (void **)&s_ov_px, NULL, 0)
+                  : NULL;
+    if (!bmp)
+        return 0;
+    SelectObject(s_ov_dc, bmp);
+    font = CreateFontA(-13, 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, 0, 0,
+                       NONANTIALIASED_QUALITY, FIXED_PITCH, "Consolas");
+    if (font)
+        SelectObject(s_ov_dc, font);
+    SetBkMode(s_ov_dc, TRANSPARENT);
+    memset(&td, 0, sizeof td);
+    td.Width = OV_W;
+    td.Height = OV_H;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    return SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_ov_tex))
+        && SUCCEEDED(ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)s_ov_tex,
+                                                           NULL, &s_ov_srv));
+}
+
+static int ov_line(int y, COLORREF c, const char *fmt, ...)
+{
+    char buf[160];
+    va_list ap;
+    int n;
+
+    if (y > OV_H - OV_LINE)
+        return y;
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n < 0) n = 0;
+    if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;
+    SetTextColor(s_ov_dc, c);
+    TextOutA(s_ov_dc, 6, y, buf, n);
+    {
+        SIZE sz;
+        if (GetTextExtentPoint32A(s_ov_dc, buf, n, &sz) && sz.cx + 12 > s_ov_wmax)
+            s_ov_wmax = sz.cx + 12 < OV_W ? sz.cx + 12 : OV_W;
+    }
+    return y + OV_LINE;
+}
+
+/* The overlay's text for this frame, over the top left of the window. */
+static void ov_draw(const Rt *shown)
+{
+    LARGE_INTEGER f;
+    double ms;
+    uint32_t i, ntex = 0, nds = 0, nrt = 0, k = 0;
+    int y = 4;
+    const COLORREF white = RGB(255, 255, 255), grey = RGB(170, 170, 170),
+                   yellow = RGB(255, 220, 90);
+
+    if (!s_ov_srv && !ov_init())
+        return;
+    QueryPerformanceFrequency(&f);
+    ms = 1000.0 / (double)f.QuadPart;
+    for (i = 0; i < MAX_TEX; i++) ntex += s_tex[i].tex != NULL;
+    for (i = 0; i < MAX_DS; i++) nds += s_ds[i].tex != NULL;
+    for (i = 0; i < MAX_RT; i++) nrt += s_rt[i].tex != NULL;
+
+    memset(s_ov_px, 0, (size_t)OV_W * OV_H * 4);
+    s_ov_wmax = 0;
+    y = ov_line(y, yellow, "D3D11 debugger  F1 hide  F2 view  F3 wireframe  F4 combiners  F9 mouse");
+    y = ov_line(y, white, "%.1f fps  %.2f ms/frame   scale %ux   window %ux%u",
+                s_ov.ms > 0 ? 1000.0 / s_ov.ms : 0.0, s_ov.ms, s_scale, s_bb_w, s_bb_h);
+    y = ov_line(y, white, "view: %s   wireframe %s   combiners %s",
+                s_dbg.view ? "render target" : "final frame", s_dbg.wire ? "ON" : "off",
+                s_dbg.no_rc ? "BYPASSED" : "on");
+    y = ov_line(y, white, "draws %u  %.2f ms   textures %.2f ms: %u hashed, %u decoded",
+                s_fd.draws, s_fd.t_draw * ms, s_fd.t_tex * ms, s_fd.hashes, s_fd.decodes);
+    y = ov_line(y, white, "surface uploads %u  %.2f ms   readbacks %u  %.2f ms   vb %.2f  cb %.2f ms",
+                s_fd.uploads, s_fd.t_upload * ms, s_fd.readbacks, s_fd.t_readback * ms,
+                s_fd.t_vb * ms, s_fd.t_cb * ms);
+    y = ov_line(y, white, "cached: pixel shaders %d/%d  textures %u/%d  targets %u/%d  depth %u/%d",
+                s_npsv, MAX_PS, ntex, MAX_TEX, nrt, MAX_RT, nds, MAX_DS);
+    y = ov_line(y, grey, "render targets: #, guest address, guest size, bpp, format");
+    for (i = 0; i < MAX_RT; i++) {
+        const Rt *r = &s_rt[i];
+        if (!r->tex)
+            continue;
+        k++;
+        y = ov_line(y, r == shown ? yellow : grey, " %c%2u  %08X  %4ux%-4u  %2u  0x%X%s",
+                    r == shown ? '>' : ' ', k, r->va, r->w, r->h, r->bpp * 8, r->fmt,
+                    r == s_last_rt ? "  last drawn" : "");
+    }
+    if (s_iq) {
+        y = ov_line(y, s_ov.iq_total ? yellow : grey, "debug layer: %u messages",
+                    s_ov.iq_total);
+        for (i = 0; i < 2; i++)
+            if (s_ov.iq_last[i][0])
+                y = ov_line(y, grey, "  %.100s", s_ov.iq_last[i]);
+    }
+    GdiFlush();
+    ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_ov_tex, 0, NULL,
+                                          s_ov_px, OV_W * 4, 0);
+    y += 4;
+    blit(s_ov_srv, s_bb, 8, 8, (float)s_ov_wmax, (float)y, 0, 0.72f,
+         (float)s_ov_wmax / OV_W, (float)y / OV_H);
+}
+
+/* The debug layer's messages since the last flip: printed (the first 200),
+ * counted, and the latest two kept for the overlay. */
+static void iq_drain(void)
+{
+    static uint32_t printed;
+    UINT64 n, i;
+
+    if (!s_iq)
+        return;
+    n = ID3D11InfoQueue_GetNumStoredMessages(s_iq);
+    for (i = 0; i < n; i++) {
+        SIZE_T len = 0;
+        D3D11_MESSAGE *m;
+        if (FAILED(ID3D11InfoQueue_GetMessage(s_iq, i, NULL, &len))
+            || !(m = (D3D11_MESSAGE *)malloc(len)))
+            continue;
+        if (SUCCEEDED(ID3D11InfoQueue_GetMessage(s_iq, i, m, &len))) {
+            if (printed++ < 200)
+                fprintf(stderr, "[D3D11 debug] %.*s\n", (int)m->DescriptionByteLength,
+                        m->pDescription);
+            memcpy(s_ov.iq_last[0], s_ov.iq_last[1], sizeof s_ov.iq_last[0]);
+            snprintf(s_ov.iq_last[1], sizeof s_ov.iq_last[1], "%.*s",
+                     (int)m->DescriptionByteLength, m->pDescription);
+            s_ov.iq_total++;
+        }
+        free(m);
+    }
+    ID3D11InfoQueue_ClearStoredMessages(s_iq);
+}
+
+/* The swap chain on the framebuffer window, made the first time the window
+ * is there. The window is sized to the scaled frame (within the screen) and
+ * stays resizable: the back buffer follows its client area, and the frame
+ * is fitted inside at its own aspect. */
+static int sc_ready(HWND hwnd)
+{
+    RECT cr;
+    UINT w, h;
+
+    if (!s_sc) {
+        IDXGIDevice *xd = NULL;
+        IDXGIAdapter *ad = NULL;
+        IDXGIFactory2 *fac = NULL;
+        DXGI_SWAP_CHAIN_DESC1 d;
+        RECT wa, wr = { 0, 0, (LONG)(640 * s_scale), (LONG)(480 * s_scale) };
+
+        ID3D11Device_QueryInterface(s_dev, &IID_IDXGIDevice, (void **)&xd);
+        if (xd) IDXGIDevice_GetAdapter(xd, &ad);
+        if (ad) IDXGIAdapter_GetParent(ad, &IID_IDXGIFactory2, (void **)&fac);
+        memset(&d, 0, sizeof d);
+        d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        d.SampleDesc.Count = 1;
+        d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        d.BufferCount = 2;
+        d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        if (fac) {
+            IDXGIFactory2_CreateSwapChainForHwnd(fac, (IUnknown *)s_dev, hwnd, &d, NULL, NULL,
+                                                 &s_sc);
+            IDXGIFactory2_MakeWindowAssociation(fac, hwnd, DXGI_MWA_NO_ALT_ENTER);
+            IDXGIFactory2_Release(fac);
+        }
+        if (ad) IDXGIAdapter_Release(ad);
+        if (xd) IDXGIDevice_Release(xd);
+        if (!s_sc) {
+            static int said;
+            if (!said++)
+                fprintf(stderr, "[D3D11] no swap chain: the window shows guest memory\n");
+            return 0;
+        }
+        xbox_FramebufferWindowExternalPresent(1);
+        /* ponytail: 640x480 a scale step, the size this title renders at,
+         * shrunk to fit the screen. Async: the window's thread moves it. */
+        SystemParametersInfoA(SPI_GETWORKAREA, 0, &wa, 0);
+        while (wr.right > (wa.right - wa.left) * 9 / 10
+               || wr.bottom > (wa.bottom - wa.top) * 9 / 10) {
+            wr.right = wr.right * 3 / 4;
+            wr.bottom = wr.bottom * 3 / 4;
+        }
+        AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+        SetWindowPos(hwnd, NULL, 0, 0, wr.right - wr.left, wr.bottom - wr.top,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+        fprintf(stderr, "[D3D11] presenting at %ux through a swap chain\n", s_scale);
+    }
+    if (!GetClientRect(hwnd, &cr))
+        return 0;
+    w = (UINT)(cr.right - cr.left);
+    h = (UINT)(cr.bottom - cr.top);
+    if (!w || !h)
+        return 0;                              /* minimised */
+    if (w != s_bb_w || h != s_bb_h) {
+        if (s_bb) ID3D11RenderTargetView_Release(s_bb);
+        s_bb = NULL;
+        ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 0, NULL, NULL);
+        if (FAILED(IDXGISwapChain1_ResizeBuffers(s_sc, 0, w, h, DXGI_FORMAT_UNKNOWN, 0)))
+            return 0;
+        s_bb_w = w;
+        s_bb_h = h;
+    }
+    if (!s_bb) {
+        ID3D11Texture2D *bb = NULL;
+        IDXGISwapChain1_GetBuffer(s_sc, 0, &IID_ID3D11Texture2D, (void **)&bb);
+        if (bb) {
+            ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)bb, NULL, &s_bb);
+            ID3D11Texture2D_Release(bb);
+        }
+    }
+    return s_bb != NULL;
+}
+
+/* The finished frame (or, with F2, the render target picked) onto the swap
+ * chain, fitted to the window, and the overlay over it.
+ *
+ * ponytail: the frame shown is the target drawn into last. A title that
+ * writes its front buffer with the CPU and draws nothing would show its last
+ * drawn frame instead; present guest memory there if one does. */
+static void present(void)
+{
+    static const float black[4] = { 0, 0, 0, 1 };
+    HWND hwnd = (HWND)xbox_FramebufferWindowHwnd();
+    const Rt *r = s_last_rt;
+
+    if (!hwnd || !sc_ready(hwnd))
+        return;
+    if (s_dbg.view) {
+        uint32_t i, k = 0;
+        for (i = 0; i < MAX_RT; i++)
+            if (s_rt[i].tex && ++k == (uint32_t)s_dbg.view)
+                r = &s_rt[i];
+        if (k < (uint32_t)s_dbg.view)
+            s_dbg.view = 0;                    /* past the last: the frame again */
+    }
+    ID3D11DeviceContext_ClearRenderTargetView(s_ctx, s_bb, black);
+    if (r) {
+        float fw = (float)s_bb_w, fh = (float)s_bb_h;
+        if (fw * r->h > fh * r->w)
+            fw = fh * r->w / r->h;
+        else
+            fh = fw * r->h / r->w;
+        blit(r->srv, s_bb, ((float)s_bb_w - fw) / 2, ((float)s_bb_h - fh) / 2, fw, fh,
+             1, 1.0f, 1, 1);
+    }
+    if (s_dbg.overlay)
+        ov_draw(r);
+    IDXGISwapChain1_Present(s_sc, 0, 0);
+}
+
+/* F1..F4 on their press, from the window's key table. */
+static void hotkeys(void)
+{
+    static int prev[4];
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        int down = xbox_FramebufferKeyDown(VK_F1 + i);
+        if (down && !prev[i]) {
+            switch (i) {
+            case 0: s_dbg.overlay ^= 1; break;
+            case 1: s_dbg.view++; break;
+            case 2: s_dbg.wire ^= 1; break;
+            case 3: s_dbg.no_rc ^= 1; break;
+            }
+        }
+        prev[i] = down;
+    }
+}
+
+/* The frame is done: show it, then write every target back to guest memory,
+ * where the dumps and a title that reads its own frame find it, and treat
+ * guest memory as the truth again next frame (the title may write a surface
+ * with the CPU in between). */
 static void be_flip(void)
 {
+    LONGLONG now = qpc();
     uint32_t i;
+
+    hotkeys();
+    iq_drain();
+#define FD(x) s_fd.x = s_st.x - s_fr.x
+    FD(readbacks); FD(uploads); FD(decodes); FD(hashes); FD(draws);
+    FD(t_readback); FD(t_upload); FD(t_tex); FD(t_draw); FD(t_vb); FD(t_cb);
+#undef FD
+    s_fr = s_st;            /* the readbacks below count towards the next frame */
+    if (s_ov.t_last) {
+        LARGE_INTEGER f;
+        double ms;
+        QueryPerformanceFrequency(&f);
+        ms = (double)(now - s_ov.t_last) * 1000.0 / (double)f.QuadPart;
+        s_ov.ms = s_ov.ms > 0 ? s_ov.ms * 0.9 + ms * 0.1 : ms;
+    }
+    s_ov.t_last = now;
+    present();
+
     for (i = 0; i < MAX_RT; i++)
         if (s_rt[i].tex) {
             rt_readback(&s_rt[i]);
@@ -1238,6 +1740,7 @@ static void be_flip(void)
                         s_st.uploads / secs, s_st.t_upload * ms, s_st.t_vb * ms, s_st.t_cb * ms);
             }
             memset(&s_st, 0, sizeof s_st);
+            memset(&s_fr, 0, sizeof s_fr);
             t0 = now;
             f0 = s_frame;
         }
@@ -1267,8 +1770,29 @@ int d3d11_backend_init(void)
     D3D11_BUFFER_DESC cbd;
     HRESULT hr;
 
-    hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0,
-                           D3D11_SDK_VERSION, &s_dev, &fl, &s_ctx);
+    {
+        const char *e = getenv("RECOMP_SCALE");
+        int n = e ? atoi(e) : 2;
+        s_scale = n >= 1 && n <= 8 ? (uint32_t)n : 2;
+    }
+    /* RECOMP_D3D11_DEBUG=1: the debug layer, its messages on the overlay
+     * and stderr. It needs the Graphics Tools optional feature; without it
+     * the device is made as usual. */
+    hr = E_FAIL;
+    if (getenv("RECOMP_D3D11_DEBUG") && strcmp(getenv("RECOMP_D3D11_DEBUG"), "0")) {
+        hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_DEBUG,
+                               NULL, 0, D3D11_SDK_VERSION, &s_dev, &fl, &s_ctx);
+        if (SUCCEEDED(hr)) {
+            ID3D11Device_QueryInterface(s_dev, &IID_ID3D11InfoQueue, (void **)&s_iq);
+            s_dbg.overlay = 1;
+        } else {
+            fprintf(stderr, "[D3D11] no debug layer (0x%08lX): install Graphics Tools\n",
+                    (unsigned long)hr);
+        }
+    }
+    if (FAILED(hr))
+        hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0,
+                               D3D11_SDK_VERSION, &s_dev, &fl, &s_ctx);
     if (FAILED(hr)) {
         fprintf(stderr, "[D3D11] no hardware device (0x%08lX); software rasteriser\n",
                 (unsigned long)hr);
@@ -1289,11 +1813,12 @@ int d3d11_backend_init(void)
     ID3D11Device_CreateBuffer(s_dev, &cbd, NULL, &s_cb);
     ps_cache_load();
     memset(&plain, 0, sizeof plain);       /* texel * diffuse: proves the PS compiles */
-    if (!s_vs || !s_layout || !s_cb || !ps_get(&plain)) {
+    if (!s_vs || !s_layout || !s_cb || !ps_get(&plain) || !blit_init()) {
         fprintf(stderr, "[D3D11] pipeline setup failed; software rasteriser\n");
         return 0;
     }
     nv2a_backend_register(&s_backend);
-    fprintf(stderr, "[D3D11] render back end up (feature level %X)\n", (unsigned)fl);
+    fprintf(stderr, "[D3D11] render back end up (feature level %X, %ux resolution)\n",
+            (unsigned)fl, s_scale);
     return 1;
 }

@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "cacheVariables": { "CMAKE_C_COMPILER": "cl" },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] }
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "The build the docs use: build\\sneakking_recomp.exe",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "relwithdebinfo",
+      "displayName": "Release with debug info",
+      "description": "Optimised, with a PDB for the debugger. An unoptimised build of the generated code is too slow to play.",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/out/build/relwithdebinfo",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "displayName": "Release", "configurePreset": "release", "jobs": 2 },
+    { "name": "relwithdebinfo", "displayName": "Release with debug info", "configurePreset": "relwithdebinfo", "jobs": 2 }
+  ]
+}

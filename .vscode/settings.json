@@ -1,0 +1,7 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "files.exclude": { "game": true, "analysis": true, "out": true, "build": true },
+  "search.exclude": { "src/recomp/gen": true }
+}

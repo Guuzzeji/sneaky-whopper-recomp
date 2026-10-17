@@ -471,6 +471,46 @@ static void sampler_start(void)
                              (LPVOID)(uintptr_t)atoi(s), 0, NULL));
 }
 
+/* ── Launch environment ────────────────────────────────────── */
+
+/* A switch that defaults on: unset becomes "1", "0" becomes unset (the
+ * toolkit tests these for presence). */
+static void env_default_on(const char *name)
+{
+    char buf[64];
+    const char *v = getenv(name);
+    if (!v)
+        snprintf(buf, sizeof buf, "%s=1", name);
+    else if (strcmp(v, "0") == 0)
+        snprintf(buf, sizeof buf, "%s=", name);
+    else
+        return;
+    _putenv(buf);
+}
+
+/* Every path the game uses is relative to the repo root (game\, mkb.ini,
+ * the shader cache). Started from an IDE or Explorer the working directory
+ * is wherever the exe was built, so walk up from the exe to the folder that
+ * holds game\default.xbe and work from there. */
+static void chdir_to_game_root(void)
+{
+    char dir[MAX_PATH], probe[MAX_PATH + 32];
+    char *slash;
+
+    if (GetFileAttributesA(YOUR_GAME_XBE_PATH) != INVALID_FILE_ATTRIBUTES)
+        return;
+    if (!GetModuleFileNameA(NULL, dir, sizeof dir))
+        return;
+    while ((slash = strrchr(dir, '\\')) != NULL) {
+        *slash = 0;
+        snprintf(probe, sizeof probe, "%s\\%s", dir, YOUR_GAME_XBE_PATH);
+        if (GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES) {
+            SetCurrentDirectoryA(dir);
+            return;
+        }
+    }
+}
+
 /* ── WinMain ───────────────────────────────────────────────── */
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
@@ -484,6 +524,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     (void)lpCmdLine;
     (void)nCmdShow;
 
+    /* A GUI-subsystem exe started from an IDE or Explorer has nowhere to
+     * write its log; give it a console. Redirected runs keep their files. */
+    if (!GetStdHandle(STD_ERROR_HANDLE) && AllocConsole()) {
+        FILE *f;
+        freopen_s(&f, "CONOUT$", "w", stdout);
+        freopen_s(&f, "CONOUT$", "w", stderr);
+    }
+
     /* Unbuffered output for immediate visibility during debugging */
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -494,6 +542,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * device, and XAudio2 ran dry about 100 ms in every second. */
     timeBeginPeriod(1);
 
+    chdir_to_game_root();
+
+    /* What a normal run needs, on unless set to 0, so the exe runs as is
+     * from an IDE or Explorer. RECOMP_AC97_READY: without it DirectSound
+     * init fails and the game shuts itself down. RECOMP_PB_EXEC: without it
+     * nothing writes the D3D fence semaphore. RECOMP_FB_WINDOW: without it
+     * nothing is visible. Set before the memory layout, which reads the
+     * first two. */
+    env_default_on("RECOMP_AC97_READY");
+    env_default_on("RECOMP_PB_EXEC");
+    env_default_on("RECOMP_FB_WINDOW");
+
     /* Freed memory has to come back. BlitzTech's heap takes 50 of the 64 MB
      * contiguous arena at boot, and every movie allocates two 1.2 MB D3D
      * surfaces through MmAllocateContiguousMemoryEx and frees them at the
@@ -502,10 +562,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * the Press START and menu videos (and the menu music in them) stall
      * after one packet. RECOMP_HEAP_RECLAIM=0 turns it off. Set before
      * anything allocates: the toolkit reads it once. */
-    if (!getenv("RECOMP_HEAP_RECLAIM"))
-        _putenv("RECOMP_HEAP_RECLAIM=1");
-    else if (strcmp(getenv("RECOMP_HEAP_RECLAIM"), "0") == 0)
-        _putenv("RECOMP_HEAP_RECLAIM=");
+    env_default_on("RECOMP_HEAP_RECLAIM");
 
     printf("=== Sneak King - Static Recompilation ===\n");
     printf("Loading XBE...\n");
@@ -558,21 +615,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * frame's time: with no vblank the count never moves, the first two
      * packets of KingGamesIdent.xmv are read and nothing is ever shown.
      * RECOMP_VBLANK=0 still turns it off. */
-    if (!getenv("RECOMP_VBLANK"))
-        _putenv("RECOMP_VBLANK=1");
-    else if (strcmp(getenv("RECOMP_VBLANK"), "0") == 0)
-        _putenv("RECOMP_VBLANK=");
+    env_default_on("RECOMP_VBLANK");
 
     /* The controllers. XAPI is linked into the image and drives the MCPX
      * OHCI registers itself, so the pad only exists if the toolkit's OHCI
      * model is up -- and nothing in the toolkit brings it up but the title.
-     * The keyboard is a pad on port 0. Both default on; =0 turns either off.
-     * Must follow the memory layout: it protects the aperture to trap it. */
-    if (!getenv("RECOMP_USB"))
-        _putenv("RECOMP_USB=1");
-    else if (strcmp(getenv("RECOMP_USB"), "0") == 0)
-        _putenv("RECOMP_USB=");
-    if (!getenv("RECOMP_KEYBOARD"))
+     * Keyboard and mouse are a pad on port 0 (RECOMP_MKB, the toolkit's
+     * mkb_input.c), bound for this game in mkb.ini. RECOMP_MKB=0 falls back
+     * to the toolkit's keyboard-only pad (RECOMP_KEYBOARD); running both
+     * would press two pad buttons for some keys. All default on; =0 turns
+     * one off. Must follow the memory layout: it protects the aperture to
+     * trap it. */
+    env_default_on("RECOMP_USB");
+    env_default_on("RECOMP_MKB");
+    if (!getenv("RECOMP_MKB_INI"))
+        _putenv("RECOMP_MKB_INI=mkb.ini");     /* beside game\, like the XBE path */
+    if (getenv("RECOMP_MKB") && !getenv("RECOMP_KEYBOARD"))
+        _putenv("RECOMP_KEYBOARD=");
+    else if (!getenv("RECOMP_KEYBOARD"))
         _putenv("RECOMP_KEYBOARD=1");
     else if (strcmp(getenv("RECOMP_KEYBOARD"), "0") == 0)
         _putenv("RECOMP_KEYBOARD=");
