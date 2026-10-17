@@ -1,0 +1,24 @@
+# Game data: copyrighted, never commit
+*.iso
+*.xiso
+*.xbe
+*.xex
+game/
+
+# Analysis output (contains disassembly of game code)
+analysis/
+
+# Generated lifted C (regenerate from the XBE)
+src/recomp/gen/
+
+# Build and runtime output
+build/
+out/
+saves/
+.vs/
+*.pdb
+*.ilk
+*.exe
+*.log
+__pycache__/
+.venv/
