@@ -29,6 +29,7 @@
 #include <windows.h>
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -581,6 +582,10 @@ static D3D11_TEXTURE_ADDRESS_MODE map_addr(uint32_t a)
 typedef struct {
     float rt_w, rt_h, zscale, textured;
     float tex_w, tex_h, alpha_ref, alpha_func;
+    /* Register combiners, raw: per stage colour ICW, alpha ICW, colour OCW,
+     * alpha OCW; per stage factor0, factor1; final CW0, CW1, C0, C1;
+     * control, stage program, use_rc. */
+    uint32_t st[8][4], fac[8][4], fin[4], ctl[4];
 } Consts;
 
 /* Vertices arrive in surface pixels with the title's own integer depth and
@@ -588,7 +593,8 @@ typedef struct {
  * two so the comparison is exact; see ds_get. */
 static const char s_hlsl[] =
 "cbuffer C : register(b0) { float2 rt; float zscale; float textured;\n"
-"                           float2 ts; float aref; float afunc; };\n"
+"                           float2 ts; float aref; float afunc;\n"
+"                           uint4 st[8]; uint4 fac[8]; uint4 fin; uint4 ctl; };\n"
 "struct VI { float4 p : POSITION; float4 c : COLOR; float2 uv : TEXCOORD; };\n"
 "struct VO { float4 p : SV_Position; float4 c : COLOR; float2 uv : TEXCOORD; };\n"
 "VO vs(VI i) {\n"
@@ -597,8 +603,57 @@ static const char s_hlsl[] =
 "  float z = saturate(floor(i.p.z) / zscale);\n"
 "  o.p = float4(n * w, z * w, w); o.c = i.c; o.uv = i.uv / ts; return o; }\n"
 "Texture2D t0 : register(t0); SamplerState s0 : register(s0);\n"
+/* Register combiners: a line-for-line port of nv2a_rc_eval (the toolkit's
+ * nv2a_combiner.c), which documents the encoding. Registers: 0 zero, 1 c0,
+ * 2 c1, 3 fog, 4 v0, 5 v1, 8 t0, 12 r0, 13 r1, 14 v1+r0, 15 E*F. */
+"float4 unpk(uint c) { return float4((c >> 16) & 255, (c >> 8) & 255, c & 255, c >> 24) / 255.0; }\n"
+"float mapin(float x, uint b) { float p = max(x, 0); uint m = (b >> 5) & 7;\n"
+"  if (m == 0) return p; if (m == 1) return 1 - saturate(x); if (m == 2) return 2 * p - 1;\n"
+"  if (m == 3) return -2 * p + 1; if (m == 4) return p - 0.5; if (m == 5) return -p + 0.5;\n"
+"  if (m == 6) return x; return -x; }\n"
+"float3 mapout(float3 x, uint m) { if (m == 0x08) x -= 0.5; else if (m == 0x10) x *= 2;\n"
+"  else if (m == 0x18) x = (x - 0.5) * 2; else if (m == 0x20) x *= 4;\n"
+"  else if (m == 0x30) x *= 0.5; return clamp(x, -1, 1); }\n"
+"float3 rgb(float4 R[16], uint b) { float4 r = R[b & 15]; float3 v = (b & 16) ? r.aaa : r.rgb;\n"
+"  return float3(mapin(v.r, b), mapin(v.g, b), mapin(v.b, b)); }\n"
+"float alp(float4 R[16], uint b) { float4 r = R[b & 15]; return mapin((b & 16) ? r.a : r.b, b); }\n"
+"float4 rc(float4 v0, float4 t) {\n"
+"  float4 R[16]; [unroll] for (int k = 0; k < 16; k++) R[k] = 0;\n"
+"  R[4] = v0; R[8] = t; R[12].a = (ctl.y & 31) ? t.a : 1;\n"
+"  uint n = min(ctl.x & 255, 8), fl = ctl.x >> 8;\n"
+"  [loop] for (uint s = 0; s < n; s++) {\n"
+"    uint icw = st[s].x, aicw = st[s].y, ocw = st[s].z, aocw = st[s].w;\n"
+"    uint f = ocw >> 12, af = aocw >> 12, d;\n"
+"    R[1] = unpk(fac[(fl & 0x10) ? s : 0].x); R[2] = unpk(fac[(fl & 0x100) ? s : 0].y);\n"
+"    bool mux = (fl & 1) ? R[12].a >= 0.5 : (((uint)(R[12].a * 255)) & 1) != 0;\n"
+"    float3 A = rgb(R, icw >> 24), B = rgb(R, icw >> 16), C = rgb(R, icw >> 8), D = rgb(R, icw);\n"
+"    float aA = alp(R, aicw >> 24), aB = alp(R, aicw >> 16), aC = alp(R, aicw >> 8), aD = alp(R, aicw);\n"
+"    float3 pab = (f & 2) ? dot(A, B).xxx : A * B, pcd = (f & 1) ? dot(C, D).xxx : C * D;\n"
+"    float3 sum = (f & 4) ? (mux ? pcd : pab) : pab + pcd;\n"
+"    float3 ab = mapout(pab, f & 0x38), cd = mapout(pcd, f & 0x38), ms = mapout(sum, f & 0x38);\n"
+"    float apab = aA * aB, apcd = aC * aD, asum = (af & 4) ? (mux ? apcd : apab) : apab + apcd;\n"
+"    float aab = mapout(apab.xxx, af & 0x38).x, acd = mapout(apcd.xxx, af & 0x38).x,\n"
+"          ams = mapout(asum.xxx, af & 0x38).x;\n"
+"    d = (ocw >> 4) & 15; if (d) { R[d].rgb = ab; if (f & 0x80) R[d].a = ab.b; }\n"
+"    d = ocw & 15;        if (d) { R[d].rgb = cd; if (f & 0x40) R[d].a = cd.b; }\n"
+"    d = (ocw >> 8) & 15; if (d) R[d].rgb = ms;\n"
+"    d = (aocw >> 4) & 15; if (d) R[d].a = aab;\n"
+"    d = aocw & 15;        if (d) R[d].a = acd;\n"
+"    d = (aocw >> 8) & 15; if (d) R[d].a = ams;\n"
+"    R[0] = 0; }\n"
+"  float4 o = R[12];\n"
+"  if (fin.x | fin.y) {\n"
+"    uint f0 = fin.x, f1 = fin.y, ff = f1 & 255;\n"
+"    R[1] = unpk(fin.z); R[2] = unpk(fin.w);\n"
+"    float3 a = (ff & 0x40) ? 1 - R[5].rgb : R[5].rgb, b = (ff & 0x20) ? 1 - R[12].rgb : R[12].rgb;\n"
+"    R[14] = float4((ff & 0x80) ? saturate(a + b) : a + b, 0);\n"
+"    R[15] = float4(rgb(R, f1 >> 24) * rgb(R, f1 >> 16), 0);\n"
+"    float3 A = rgb(R, f0 >> 24), B = rgb(R, f0 >> 16), C = rgb(R, f0 >> 8), D = rgb(R, f0);\n"
+"    o = float4(D + C * (1 - A) + B * A, alp(R, f1 >> 8)); }\n"
+"  return saturate(o); }\n"
 "float4 ps(VO i) : SV_Target {\n"
-"  float4 c = i.c; if (textured > 0.5) c *= t0.Sample(s0, i.uv);\n"
+"  float4 t = textured > 0.5 && (!ctl.z || (ctl.y & 31)) ? t0.Sample(s0, i.uv) : float4(0, 0, 0, 1);\n"
+"  float4 c = ctl.z ? rc(i.c, t) : (textured > 0.5 ? i.c * t : i.c);\n"
 "  float a = round(c.a * 255); int f = (int)afunc; bool ok = true;\n"
 "  if (f == 0) ok = false; else if (f == 1) ok = a < aref;\n"
 "  else if (f == 2) ok = a == aref; else if (f == 3) ok = a <= aref;\n"
@@ -717,6 +772,19 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     k.alpha_ref = (float)(rs->alpha_ref & 0xFF);
     k.alpha_func = rs->alpha_test_enable && rs->alpha_func >= 0x200 && rs->alpha_func <= 0x207
                  ? (float)(rs->alpha_func - 0x200) : 7.0f;
+    memset(k.st, 0, sizeof k - offsetof(Consts, st));
+    if (b->rc) {
+        const Nv2aCombiner *c = b->rc;
+        int i;
+        for (i = 0; i < 8; i++) {
+            k.st[i][0] = c->color_icw[i]; k.st[i][1] = c->alpha_icw[i];
+            k.st[i][2] = c->color_ocw[i]; k.st[i][3] = c->alpha_ocw[i];
+            k.fac[i][0] = c->factor0[i];  k.fac[i][1] = c->factor1[i];
+        }
+        k.fin[0] = c->final0; k.fin[1] = c->final1;
+        k.fin[2] = c->final_c0; k.fin[3] = c->final_c1;
+        k.ctl[0] = c->control; k.ctl[1] = c->stage_program; k.ctl[2] = 1;
+    }
     ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_cb, 0, NULL, &k, 0, 0);
 
     /* Blend */

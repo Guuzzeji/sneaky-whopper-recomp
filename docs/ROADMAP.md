@@ -155,7 +155,9 @@ These are tracked in P5.4.
 
 Starts once P5 is complete, because input is what gets the game past "Press START" and into the menus. It finishes the rest of P4 so that rendering is complete.
 
-- [ ] Render the main menu correctly: textures, swizzle, blending and register combiners. The menus now draw through the D3D11 back end, which applies texture stage 0 × diffuse with blend, alpha test, depth and stencil. Register combiners and stages 1–3 do not reach a back end yet (`nv2a_backend.h`). The whole image looks dark; check that against xemu.
+- [ ] Render the main menu correctly: textures, swizzle, blending and register combiners. The menus now draw through the D3D11 back end, which applies blend, alpha test, depth and stencil. Texture stages 1–3, specular and fog do not reach a back end yet (`nv2a_backend.h`).
+  - [x] The menus were at half brightness. Every menu batch has diffuse 0x80 and a combiner that scales by 2 (`COLOR_OCW` 0x00010C00, op SHIFTLEFTBY1, which is D3D's MODULATE2X). The back end drew texel × diffuse and dropped the ×2. Now `Nv2aBatch.rc` carries the combiner program (toolkit), and the D3D11 pixel shader evaluates it with an HLSL port of `nv2a_rc_eval`. The main menu and Help & Options render at full brightness.
+  - [ ] The software rasteriser (`RECOMP_D3D11=0`) still ignores stencil. After the menu, the game clears stencil to 0x80 and draws two black quads at alpha 0.25 with stencil NOTEQUAL 0x80, which hardware rejects everywhere. The software path draws both quads and darkens the frame.
 - [ ] Compare frames with xemu. Use RenderDoc to inspect the host D3D11 output; the back end's device is offscreen, so capture it with RenderDoc's process injection.
 - [x] Get the Press START background video playing. Fixed in P5 by contiguous-memory reclaim.
 - [x] Get movies to full speed. Fixed in P5 by the trace gate and the D3D11 back end. On the main thread, the lifted MMX YUV→RGB copy (`sub_00280085`) is now the largest cost.
