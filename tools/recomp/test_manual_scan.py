@@ -76,6 +76,16 @@ def test_scan_partitions_correctly():
         [hex(a) for a in sorted(ref)]
 
 
+def test_scan_merges_several_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        other = os.path.join(tmp, "other.c")
+        with open(other, "w") as f:
+            f.write("void sub_00077000(void) { g_esp += 4; }\n")
+        skip, wrap, ref = scan([_write(tmp), other])
+    assert skip == {0x11000, 0x22000, 0x44000, 0x77000}
+    assert wrap == {0x44000}
+
+
 def test_disabled_block_is_not_a_definition():
     with tempfile.TemporaryDirectory() as tmp:
         skip, _, _ = scan(_write(tmp))

@@ -64,6 +64,8 @@ _ENTER_RE = re.compile(r"^void sub_([0-9A-Fa-f]{8})_enter\(void\)\s*(?:\{|$)", r
 
 def entry_hooks(path):
     """Addresses of functions the manual file defines an entry hook for."""
+    if isinstance(path, (list, tuple)):
+        return set().union(*(entry_hooks(p) for p in path))
     if not os.path.exists(path):
         return set()
     live = strip_disabled(open(path, encoding="utf-8", errors="replace").read())
@@ -82,6 +84,9 @@ def scan(path):
                 to SwapCopy_D3D_..., gen defines that and nothing defines
                 sub_00350C10. Correctness beats a prettier name.
     """
+    if isinstance(path, (list, tuple)):
+        parts = [scan(p) for p in path]
+        return tuple(set().union(*(r[i] for r in parts)) for i in range(3))
     if not os.path.exists(path):
         print(f"WARNING: {path} not found; excluding nothing.", file=sys.stderr)
         return set(), set(), set()

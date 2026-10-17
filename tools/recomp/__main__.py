@@ -246,9 +246,10 @@ def main():
                         help="JSON list of addresses the project implements by "
                              "hand. Their bodies are not generated, so the "
                              "hand-written definition links instead")
-    parser.add_argument("--exclude-manual", metavar="FILE",
+    parser.add_argument("--exclude-manual", metavar="FILE", action="append",
                         nargs="?", const="src/game/recomp/recomp_manual.c",
-                        help="Scan a C file (default recomp_manual.c) for the "
+                        help="Scan a C file (default recomp_manual.c; repeat "
+                             "for more files) for the "
                              "functions it defines by hand and skip generating "
                              "their bodies -- the same effect as listing them in "
                              "--manual-functions, but read straight from the "
