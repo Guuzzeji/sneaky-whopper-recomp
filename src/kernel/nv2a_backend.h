@@ -38,6 +38,12 @@ typedef struct {
     uint32_t pitch;             /* bytes per row */
     uint32_t bytes_per_pixel;   /* 2 or 4 */
     uint32_t aa_sx, aa_sy;      /* 1 or 2 each */
+    /* Where the clip rectangle sits, real pixels. Vertices are in whole-surface
+     * pixels, so a back end that keeps its own copy of the surface needs the
+     * offset as well as the size: a title can narrow the clip to a window
+     * (Burnout 3's option values) and draw at x 600. */
+    uint32_t clip_x, clip_y;
+    uint32_t format;            /* SET_SURFACE_FORMAT colour, low nibble */
 } Nv2aSurface;
 
 /* A texture as the title programmed it. uv in Nv2aVertex are in texels. */
@@ -51,6 +57,9 @@ typedef struct {
      * a linear texture) and the raw SET_TEXTURE_FILTER word (MIN in bits
      * 16-23). A back end that ignores them samples level 0. */
     uint32_t levels, filter;
+    /* Guest address of the 256-entry A8R8G8B8 palette of a P8 texture
+     * (SET_TEXTURE_PALETTE), 0 otherwise. Fonts and frontend art are P8. */
+    uint32_t palette;
 } Nv2aTexture;
 
 typedef struct {

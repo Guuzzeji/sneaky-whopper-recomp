@@ -1282,6 +1282,12 @@ static void fence_mirrors_tick(void)
 }
 
 static int s_nv2a_trace = 0;
+/* The per-kick DMA_PUT and PCRTC_START lines. RECOMP_NV2A_TRACE only: the
+ * survey above also rides on RECOMP_PB_EXEC, and with it these printed a line
+ * for every kickoff -- on Sneak King's movies 42 % of the executor thread
+ * went to formatting and flushing them, and the executor is what paces the
+ * frame. */
+static int s_nv2a_put_trace = 0;
 
 /* The display framebuffer, as reported by AvSetDisplayMode. Checksummed once a
  * second so a run can answer the only question that matters before building a
@@ -1544,7 +1550,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                  * in its device struct rather than assuming 0xFD800000, and
                  * mirroring the wrong block leaves it spinning on a GET that
                  * never moves. */
-                if (s_nv2a_trace) {
+                if (s_nv2a_put_trace) {
                     uint32_t g = *(volatile uint32_t *)
                                  ((char *)regs + NV2A_USER_DMA_GET);
                     fprintf(stderr, "  [NV2A] DMA_PUT = 0x%08X  DMA_GET = "
@@ -1554,7 +1560,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                 fflush(stderr);
             }
         }
-        if (s_nv2a_trace) {
+        if (s_nv2a_put_trace) {
             static uint32_t last_start = 0xFFFFFFFFu;
             uint32_t start = *(volatile uint32_t *)((char *)regs + 0x600800);
             if (start != last_start) {
@@ -3156,6 +3162,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
         s_nv2a_trace = getenv("RECOMP_NV2A_TRACE") != NULL
                     || getenv("RECOMP_PB_SCAN") != NULL
                     || getenv("RECOMP_PB_EXEC") != NULL;
+        s_nv2a_put_trace = getenv("RECOMP_NV2A_TRACE") != NULL;
         if (g_nv2a_memory) {
             fprintf(stderr, "  NV2A register aperture: %u MB at Xbox VA "
                     "0x%08X (zeroed, no register semantics)\n",

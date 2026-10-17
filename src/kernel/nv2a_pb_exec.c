@@ -793,6 +793,9 @@ static void current_surface(Nv2aSurface *out)
     out->bytes_per_pixel = surface_bpp();
     out->aa_sx           = s_gpu.aa_sx > 1.5f ? 2 : 1;
     out->aa_sy           = s_gpu.aa_sy > 1.5f ? 2 : 1;
+    out->clip_x          = s_gpu.clip_x;
+    out->clip_y          = s_gpu.clip_y;
+    out->format          = s_gpu.format & 0xF;
 }
 
 /* Render state in the NV2A's own values, gathered from what the executor
@@ -843,7 +846,7 @@ int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out)
     s_gpu.texs[0].color  = tex->color;
     s_gpu.texs[0].addr_u = 3;
     s_gpu.texs[0].addr_v = 3;
-    s_gpu.texs[0].palette = 0;          /* ponytail: no palettised formats */
+    s_gpu.texs[0].palette = tex->palette;
     s_gpu.texs[0].levels = 1;
     s_gpu.texs[0].filter = 0;
     s_gpu.texs[0].cube   = 0;
@@ -1970,6 +1973,7 @@ static void backend_flush(int textured)
         tex.addr_v = s_gpu.texs[0].addr_v;
         tex.levels = s_gpu.texs[0].pitch ? 1 : s_gpu.texs[0].levels;
         tex.filter = s_gpu.texs[0].filter;
+        tex.palette = s_gpu.texs[0].palette;
         batch.texture = &tex;
     }
     s_backend->draw(&surf, &batch);
@@ -3796,6 +3800,11 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
         if (s_ftrace == 2)
             fprintf(stderr, "[FTRACE] FLIP_STALL presenting %08X (color now %08X)%c",
                     s_gpu.drawn_offset, s_gpu.color_offset, 10);
+        /* A back end finishes the frame first: one that renders on the host
+         * GPU writes the pixels back to guest memory here, and everything
+         * below (the window, the dumps) reads them from there. */
+        if (s_backend && s_backend->flip)
+            s_backend->flip();
         /* The stall ends when the buffer being read is the one just finished.
          * There is no scanout here to wait for, so that is now. */
         s_gpu.flip_read = s_gpu.flip_write;
@@ -3850,8 +3859,6 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
             }
         }
         s_gpu.drawn_stale = 1;
-        if (s_backend && s_backend->flip)
-            s_backend->flip();
 
         if (verbose) {
             static unsigned n;
