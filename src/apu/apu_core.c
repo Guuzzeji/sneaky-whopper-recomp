@@ -986,6 +986,15 @@ static void throttle(MCPXAPUState *d)
 
 static void se_frame(MCPXAPUState *d)
 {
+    /* The EP's heartbeat. While it runs, the Dolby encoder microcode keeps
+     * EP X-memory word 0xFE85A018 at 0xCCCCCC, and XDK DSOUND's DoWork resets
+     * both DSPs whenever it is not -- a 10 ms KeStallExecutionProcessor each
+     * time. No EP runs here, so the frame clock writes it instead; without
+     * it Sneak King (XDK 5849) reset the DSPs on every DoWork, most of each
+     * frame. GP/EP memory is plain RAM (see MemoryLayoutInit), so a write is
+     * all it takes. */
+    *(volatile uint32_t *)(g_apu_ram_ptr + 0xFE85A018u) = 0xCCCCCC;
+
     mcpx_apu_update_dsp_preference(d);
     mcpx_debug_begin_frame();
     g_dbg.gp_realtime = d->gp.realtime;
