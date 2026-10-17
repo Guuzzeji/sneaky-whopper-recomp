@@ -168,12 +168,23 @@ Starts once P5 is complete, because input is what gets the game past "Press STAR
 
 ## P6 — Gameplay
 
-- [ ] Levels load and the Sneak King missions run.
-- [ ] Saves work. `U:` maps to the save dir. Stub signature checks if needed.
-- [ ] Threading and timing are stable, with frame pacing at 60 Hz.
+- [ ] Levels load and the Sneak King missions run. The first level (the saw mill) loads, the King walks, and a challenge can be accepted: its timer and delivery counter run. A delivery and a completed mission are not tested yet.
+- [x] Saves work. New Game writes a save ("Sneak King game saved"), and after a restart Continue Game loads it ("Load successful"). No signature stub was needed.
+- [ ] Threading and timing are stable, with frame pacing at 60 Hz. The first level holds a steady 30 flips/s, the same cap as with the combiners off, so the title probably locks to 30. Confirm against xemu before chasing 60.
 - [ ] Add golden-frame regression tests in the BLiNX 2 style: replay inputs, then compare frames.
 
 **Exit:** one full level is playable from start to finish.
+
+**Progress (2026-10-17):**
+
+- **The world drew black on the D3D11 back end.** Most level batches use stage program `0x21`: r0 = t0 × v0, then r0 ×= t1, where t1 is a P8 256×256 lightmap. The back-end interface passed stage 0 only, so t1 read 0. The software rasteriser drew the level correctly. Toolkit: `Nv2aBatch` now carries every enabled stage (`stages[4]`) and the fog colour. `Nv2aVertex` carries the specular colour, the fog factor and each stage's texture coordinate (`tc[4][4]`, normalised for 2D lookups on linear textures). The D3D11 pixel shader samples all four stages by their stage mode and feeds v1, fog and t0–t3 to the combiners. The toolkit test `tests/nv2a_ffp_backend` checks the new fields.
+- **11 fps in the first level, now 30.** `RECOMP_D3D11_STATS=1` now also prints where the executor thread's time goes: draws, texture lookups and decodes, readbacks, render-target uploads, vertex and constant uploads. Two causes:
+  - **Vertex uploads:** a `WRITE_DISCARD` map on every draw (about 3,600 a second) took about 500 ms of every second. Vertices now go into an 8 MB ring that maps with `NO_OVERWRITE` and discards only when it wraps.
+  - **The combiner shader:** evaluated from a constant buffer, every register read was an indexed temp array. The GPU took about 17 ms a frame, which showed up as stalls in the flip readback. Each combiner program now compiles its own pixel shader, with the program words as compile-time constants (`PsKey`, `ps_get`). The factor colours stay in the constant buffer, because titles change them per draw.
+- **Dead end, recorded:** XDK D3D's `KickOff` spins on the PFB flush bit (`0x100410` bit 16) after every kick. The ack thread clears it only between pushbuffer commands, so the main thread waits for the executor. Clearing the bit from a dedicated thread made the main thread run ahead. D3D then saw the GPU over 9 KB behind and took `BlockOnTime`'s other path (`0x1EECB0`). That path patches a `NOP 5` into the submitted pushbuffer and waits for the latch at PGRAPH `0x400B10` (`0x1EE910`), and the game hung entering the level. Supporting that path needs a `DMA_GET` that tracks the walk and the NOP interrupt. Until then the slow ack is what keeps the CPU and GPU in step.
+- **D3D11 review fixes:** a texture an earlier stage of the same draw was handed could be evicted and freed before binding (the LRU now ticks per lookup). Depth is scaled by the zeta format instead of a guess from `SET_CLIP_MAX`, and clamped at the far plane so distant geometry is no longer clipped away. One vertex that fails to transform drops only its own triangles, not the whole batch. CLIPPLANE stages discard, and bump/dependent stages sample unbumped instead of reading zero. Fixed-function vertices get a fog coordinate. Screen-space batches pass stages 1-3. Textures are hashed once a frame, and the pixel-shader cache is a 1,024-entry LRU whose file holds each program once.
+- **Open:** the King is not drawn in the first level, and the user still sees NPCs stretch for about a second and parts of the map vanish. The executor, not the D3D11 back end, is the suspect: the software rasteriser shows the same missing King. Vertex-program batches are mostly not behind the eye, so the vertex programs look fine.
+- **Sampler:** when RIP is outside the exe, `RECOMP_SAMPLE_*` now names its module and offset (`[ntdll.dll+161444]`). Before, stale stack words took the blame.
 
 ## P7 — Fun playable and polish
 

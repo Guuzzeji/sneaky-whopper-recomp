@@ -25,3 +25,6 @@ __pycache__/
 
 # Local tools (xemu with BIOS/HDD dumps)
 toolkit/
+
+# Compiled shader cache (made at run time)
+nv2a_shaders.bin

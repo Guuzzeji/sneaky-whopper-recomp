@@ -314,7 +314,7 @@ static HANDLE s_sample_thread;
 
 static DWORD WINAPI sampler_proc(LPVOID arg)
 {
-    enum { SLOTS = 1024, WORDS = 2048, THREADS = 64 };
+    enum { SLOTS = 16384, WORDS = 2048, THREADS = 64 };
     static char keys[SLOTS][56];
     static unsigned hits[SLOTS];
     static uint64_t stack[WORDS];
@@ -329,6 +329,11 @@ static DWORD WINAPI sampler_proc(LPVOID arg)
     int used = 0, nth = 0, t, i, k;
 
     Sleep(getenv("RECOMP_SAMPLE_DELAY") ? atoi(getenv("RECOMP_SAMPLE_DELAY")) * 1000 : 2000); /* past the XBE load, or to a later scene */
+    /* RECOMP_SAMPLE_FLAG=<file>: start when the file appears, so a slow
+     * moment can be sampled when it happens rather than at a guessed time. */
+    if (getenv("RECOMP_SAMPLE_FLAG"))
+        while (GetFileAttributesA(getenv("RECOMP_SAMPLE_FLAG")) == INVALID_FILE_ATTRIBUTES)
+            Sleep(100);
     th[nth++] = s_sample_thread;
     if (getenv("RECOMP_SAMPLE_ALL")) {
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -377,6 +382,22 @@ static DWORD WINAPI sampler_proc(LPVOID arg)
             ResumeThread(th[t]);
 
             snprintf(key, sizeof(key), "T%d ", t);
+            /* RIP outside the exe (a driver, ntdll): name its module, or
+             * stale stack words take the blame. Safe here: the thread runs
+             * again and holds no lock we wait on. */
+            if (stack[0] < lo || stack[0] >= hi) {
+                HMODULE mod;
+                char path[MAX_PATH];
+                const char *base = "?";
+                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       (LPCSTR)(uintptr_t)stack[0], &mod)
+                    && GetModuleFileNameA(mod, path, sizeof path)) {
+                    base = strrchr(path, '\\') ? strrchr(path, '\\') + 1 : path;
+                }
+                snprintf(key + strlen(key), sizeof(key) - strlen(key), "[%.16s+%llX] ",
+                         base, (unsigned long long)(stack[0] - (uintptr_t)mod));
+            }
             for (k = 0; k <= n && found < 2; k++) {
                 size_t l = strlen(key);
                 if (stack[k] < lo || stack[k] >= hi)
@@ -398,7 +419,7 @@ static DWORD WINAPI sampler_proc(LPVOID arg)
     fprintf(stderr, "[SAMPLE] %u samples of %d thread(s), %u per thread "
             "(T0 is the main thread); %% of one thread's samples:\n",
             total, nth, th_total[0]);
-    for (k = 0; k < 60; k++) {
+    for (k = 0; k < (getenv("RECOMP_SAMPLE_TOP") ? atoi(getenv("RECOMP_SAMPLE_TOP")) : 60); k++) {
         int best = -1;
         for (i = 0; i < used; i++)
             if (hits[i] && (best < 0 || hits[i] > hits[best]))

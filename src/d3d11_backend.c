@@ -19,9 +19,9 @@
  * Everything runs on the NV2A poll thread, one call at a time, so there is no
  * locking. The device is offscreen: there is no swapchain.
  *
- * What the back end interface carries is what gets drawn: texture stage 0
- * times the diffuse colour, blend, alpha test, depth and stencil. Register
- * combiners and texture stages 1-3 are not passed on (nv2a_backend.h).
+ * What the back end interface carries is what gets drawn: the register
+ * combiners over all four texture stages, diffuse, specular and fog, then
+ * blend, alpha test, depth and stencil (nv2a_backend.h).
  *
  * RECOMP_D3D11=0 turns it off and the software rasteriser draws as before.
  */
@@ -44,10 +44,23 @@ static ID3D11Device *s_dev;
 static ID3D11DeviceContext *s_ctx;
 static ID3D11DeviceContext1 *s_ctx1;          /* ClearView, for clip-rect clears */
 static ID3D11VertexShader *s_vs;
-static ID3D11PixelShader *s_ps;
 static ID3D11InputLayout *s_layout;
 static ID3D11Buffer *s_cb, *s_vb;
-static UINT s_vb_bytes;
+static UINT s_vb_bytes, s_vb_pos;
+
+/* RECOMP_D3D11_STATS: what the executor thread spends its time on here.
+ * Counts and QPC ticks, printed with the flip rate. */
+static struct {
+    uint32_t readbacks, uploads, decodes, hashes, draws;
+    LONGLONG t_readback, t_upload, t_tex, t_draw, t_vb, t_cb;
+} s_st;
+
+static LONGLONG qpc(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
 
 static uint8_t *guest(uint32_t va)
 {
@@ -101,6 +114,8 @@ static uint16_t px32_to_16(uint32_t p, uint32_t fmt)
 static void rt_upload(Rt *r)
 {
     const uint8_t *src = guest(r->va);
+    LONGLONG t0 = qpc();
+    s_st.uploads++;
     if (r->bpp == 4) {
         ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)r->tex,
                                               0, NULL, src, r->pitch, 0);
@@ -119,16 +134,22 @@ static void rt_upload(Rt *r)
     }
     r->valid = 1;
     r->dirty = 0;
+    s_st.t_upload += qpc() - t0;
 }
+
+static void tex_touched(uint32_t va, uint32_t len);
 
 static void rt_readback(Rt *r)
 {
     D3D11_MAPPED_SUBRESOURCE m;
     uint8_t *dst = guest(r->va);
     uint32_t x, y;
+    LONGLONG t0;
 
     if (!r->dirty)
         return;
+    t0 = qpc();
+    s_st.readbacks++;
     ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)r->staging,
                                      (ID3D11Resource *)r->tex);
     if (FAILED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)r->staging, 0,
@@ -146,6 +167,8 @@ static void rt_readback(Rt *r)
     }
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)r->staging, 0);
     r->dirty = 0;
+    tex_touched(r->va, r->pitch * r->h);
+    s_st.t_readback += qpc() - t0;
 }
 
 /* The render target for a surface, created or grown as needed and holding
@@ -303,17 +326,23 @@ static Ds *ds_get(uint32_t va, uint32_t w, uint32_t h)
 
 /* ---- textures ---------------------------------------------------------- */
 
+/* `checked`: the frame level 0 was last hashed in. Within a frame it is
+ * trusted as is, and only a render-target readback over it (rt_readback)
+ * makes it hash again. ponytail: a title that rewrites a texture with the CPU
+ * between two draws of one frame keeps the first version until the next
+ * frame; hash every lookup again if one does. */
 typedef struct {
-    uint32_t offset, w, h, pitch, color;
-    uint64_t hash;
-    uint32_t last_use;
+    uint32_t offset, w, h, pitch, color, bytes;
+    uint64_t hash, hash_l0;
+    uint32_t last_use, checked;
     ID3D11Texture2D *tex;
     ID3D11ShaderResourceView *srv;
 } Tex;
 
 #define MAX_TEX 256
 static Tex s_tex[MAX_TEX];
-static uint32_t s_frame;
+static uint32_t s_frame = 1;    /* 0 is never a frame: `checked` starts there */
+static uint32_t s_tick;         /* lookups so far: the LRU clock */
 
 /* Bytes one texel of an uncompressed format takes (as the executor's
  * tex_texel_bytes). */
@@ -379,10 +408,23 @@ static int tex_decode(const Nv2aTexture *t, uint32_t *out)
     return nv2a_backend_decode_texture(t, out);
 }
 
+/* Guest memory in [va, va+len) changed under the textures: hash them again. */
+static void tex_touched(uint32_t va, uint32_t len)
+{
+    uint32_t i;
+    for (i = 0; i < MAX_TEX; i++)
+        if (s_tex[i].tex && va < s_tex[i].offset + s_tex[i].bytes
+            && s_tex[i].offset < va + len)
+            s_tex[i].checked = 0;
+}
+
+/* The view of a texture, uploaded when new or changed. The LRU clock ticks
+ * per lookup, so the slot a lookup evicts is never one an earlier stage of
+ * the same draw was just handed. */
 static ID3D11ShaderResourceView *tex_get(const Nv2aTexture *t)
 {
     uint32_t bytes, i;
-    uint64_t h;
+    uint64_t h, h0;
     Tex *e = NULL, *lru = &s_tex[0];
     uint32_t *argb;
     int fresh = 0;
@@ -391,9 +433,7 @@ static ID3D11ShaderResourceView *tex_get(const Nv2aTexture *t)
         return NULL;
     bytes = tex_bytes(t);
     rt_flush_range(t->offset, bytes);
-    h = hash_bytes(guest(t->offset), bytes);
-    if (t->palette)              /* P8: the same indices under a new palette */
-        h = h * 31 + hash_bytes(guest(t->palette), 256 * 4);
+    s_tick++;
 
     for (i = 0; i < MAX_TEX; i++) {
         Tex *c = &s_tex[i];
@@ -402,11 +442,22 @@ static ID3D11ShaderResourceView *tex_get(const Nv2aTexture *t)
             e = c;
             break;
         }
-        if (!c->tex || c->last_use < lru->last_use || (lru->tex && !c->tex))
+        if (lru->tex && (!c->tex || c->last_use < lru->last_use))
             lru = c;
     }
+    if (e && e->checked == s_frame) {
+        h0 = e->hash_l0;
+    } else {
+        s_st.hashes++;
+        h0 = hash_bytes(guest(t->offset), bytes);
+    }
+    h = h0;
+    if (t->palette)              /* P8: the same indices under a new palette */
+        h = h * 31 + hash_bytes(guest(t->palette), 256 * 4);
     if (e && e->hash == h) {
-        e->last_use = s_frame;
+        e->hash_l0 = h0;
+        e->checked = s_frame;
+        e->last_use = s_tick;
         return e->srv;
     }
     if (!e) {
@@ -437,11 +488,13 @@ static ID3D11ShaderResourceView *tex_get(const Nv2aTexture *t)
         e->h = t->height;
         e->color = t->color;
         e->pitch = t->pitch;
+        e->bytes = bytes;
         fresh = 1;
     }
     argb = (uint32_t *)malloc((size_t)t->width * t->height * 4);
     if (!argb)
         return NULL;
+    s_st.decodes++;
     if (!tex_decode(t, argb)) {
         /* A format the decoder does not know (palettised): drop the entry so
          * the batch draws untextured, as the software path would. */
@@ -469,7 +522,9 @@ static ID3D11ShaderResourceView *tex_get(const Nv2aTexture *t)
                                           argb, t->width * 4, 0);
     free(argb);
     e->hash = h;
-    e->last_use = s_frame;
+    e->hash_l0 = h0;
+    e->checked = s_frame;
+    e->last_use = s_tick;
     return e->srv;
 }
 
@@ -580,29 +635,66 @@ static D3D11_TEXTURE_ADDRESS_MODE map_addr(uint32_t a)
 /* ---- shaders ----------------------------------------------------------- */
 
 typedef struct {
-    float rt_w, rt_h, zscale, textured;
-    float tex_w, tex_h, alpha_ref, alpha_func;
-    /* Register combiners, raw: per stage colour ICW, alpha ICW, colour OCW,
-     * alpha OCW; per stage factor0, factor1; final CW0, CW1, C0, C1;
-     * control, stage program, use_rc. */
-    uint32_t st[8][4], fac[8][4], fin[4], ctl[4];
+    float rt_w, rt_h, zscale, alpha_ref;
+    float alpha_func, pad[3];
+    float fogc[4];              /* fog colour, RGBA */
+    uint32_t tb[4];             /* stage has a texture bound */
+    /* Combiner constants, which a title changes per draw (fades): per stage
+     * factor0, factor1; the final combiner's C0, C1. The program itself is
+     * compiled into the pixel shader; see PsKey. */
+    uint32_t fac[8][4], fcon[4];
 } Consts;
+
+/* The combiner program a pixel shader is compiled for: per stage colour ICW,
+ * alpha ICW, colour OCW, alpha OCW; final CW0, CW1; control, stage program,
+ * use_rc, clip-plane mode (0 unless a stage is CLIPPLANE). As compile-time constants the compiler folds the register-file
+ * indexing away. Evaluated from a constant buffer, every R[b & 15] was an
+ * indexed temp array, and the first level's frame took ~17 ms of GPU time:
+ * 24 fps against 30 with the combiners off. */
+typedef struct {
+    uint32_t st[8][4], fin[2], ctl[4];
+} PsKey;
 
 /* Vertices arrive in surface pixels with the title's own integer depth and
  * 1/w. Depth is floored (the NV2A writes integers) and scaled by a power of
- * two so the comparison is exact; see ds_get. */
+ * two so the comparison is exact; see ds_get. It is clamped at the far end
+ * only: past the depth buffer's range a vertex draws at the far plane, as the
+ * software path's float depth lets it, while z < 0 is cut by depth clipping. */
 static const char s_hlsl[] =
-"cbuffer C : register(b0) { float2 rt; float zscale; float textured;\n"
-"                           float2 ts; float aref; float afunc;\n"
-"                           uint4 st[8]; uint4 fac[8]; uint4 fin; uint4 ctl; };\n"
-"struct VI { float4 p : POSITION; float4 c : COLOR; float2 uv : TEXCOORD; };\n"
-"struct VO { float4 p : SV_Position; float4 c : COLOR; float2 uv : TEXCOORD; };\n"
-"VO vs(VI i) {\n"
-"  VO o; float w = i.p.w > 0 ? 1.0 / i.p.w : 1.0;\n"
-"  float2 n = float2(i.p.x / rt.x * 2 - 1, 1 - i.p.y / rt.y * 2);\n"
-"  float z = saturate(floor(i.p.z) / zscale);\n"
-"  o.p = float4(n * w, z * w, w); o.c = i.c; o.uv = i.uv / ts; return o; }\n"
-"Texture2D t0 : register(t0); SamplerState s0 : register(s0);\n"
+"cbuffer C : register(b0) { float2 rt; float zscale; float aref;\n"
+"                           float afunc; float3 pad; float4 fogc; uint4 tb;\n"
+"                           uint4 fac[8]; uint4 fcon; };\n"
+"struct VO { float4 p : SV_Position; float4 c : COLOR0; float4 c1 : COLOR1; float fog : FOG;\n"
+"            float4 t0 : TEXCOORD0; float4 t1 : TEXCOORD1; float4 t2 : TEXCOORD2;\n"
+"            float4 t3 : TEXCOORD3; };\n"
+"VO vs(float4 p : POSITION, float4 c : COLOR0, float4 c1 : COLOR1, float fog : FOG,\n"
+"      float4 t0 : TEXCOORD0, float4 t1 : TEXCOORD1, float4 t2 : TEXCOORD2,\n"
+"      float4 t3 : TEXCOORD3) {\n"
+"  VO o; float w = p.w > 0 ? 1.0 / p.w : 1.0;\n"
+"  float2 n = float2(p.x / rt.x * 2 - 1, 1 - p.y / rt.y * 2);\n"
+"  float z = min(floor(p.z) / zscale, 1);\n"
+"  o.p = float4(n * w, z * w, w); o.c = c; o.c1 = c1; o.fog = fog;\n"
+"  o.t0 = t0; o.t1 = t1; o.t2 = t2; o.t3 = t3; return o; }\n"
+"Texture2D x0 : register(t0); Texture2D x1 : register(t1);\n"
+"Texture2D x2 : register(t2); Texture2D x3 : register(t3);\n"
+"SamplerState s0 : register(s0); SamplerState s1 : register(s1);\n"
+"SamplerState s2 : register(s2); SamplerState s3 : register(s3);\n"
+"#ifdef RC_ST\n"
+"static const uint4 st[8] = { RC_ST }; static const uint2 fin = RC_FIN;\n"
+"static const uint4 ctl = RC_CTL;\n"
+/* One texture stage by its SHADER_STAGE_PROGRAM mode, as the executor's
+ * rc_stage_fetch: NONE, PROJECT2D/3D, CUBEMAP (here its first face),
+ * PASSTHRU, CLIPPLANE (cp: the stage's 4 clip-plane mode bits). The bump-env
+ * and dependent modes sample at their own coordinates, unbumped; the
+ * dot-product modes read zero. An enabled stage without a texture reads
+ * white. */
+"float4 fetch(Texture2D x, SamplerState s, float4 c, uint m, uint b, uint cp) {\n"
+"  if (m == 0) return float4(0, 0, 0, 1); if (m == 4) return saturate(c);\n"
+"  if (m == 5) { [unroll] for (uint j = 0; j < 4; j++)\n"
+"      if (((cp >> j) & 1) ? c[j] >= 0 : c[j] < 0) discard;\n"
+"    return 0; }\n"
+"  if (m > 3 && m != 6 && m != 7 && m != 15 && m != 16) return 0; if (!b) return 1;\n"
+"  return x.SampleLevel(s, m == 3 ? c.xy : c.xy / (c.w != 0 ? c.w : 1), 0); }\n"
 /* Register combiners: a line-for-line port of nv2a_rc_eval (the toolkit's
  * nv2a_combiner.c), which documents the encoding. Registers: 0 zero, 1 c0,
  * 2 c1, 3 fog, 4 v0, 5 v1, 8 t0, 12 r0, 13 r1, 14 v1+r0, 15 E*F. */
@@ -617,11 +709,12 @@ static const char s_hlsl[] =
 "float3 rgb(float4 R[16], uint b) { float4 r = R[b & 15]; float3 v = (b & 16) ? r.aaa : r.rgb;\n"
 "  return float3(mapin(v.r, b), mapin(v.g, b), mapin(v.b, b)); }\n"
 "float alp(float4 R[16], uint b) { float4 r = R[b & 15]; return mapin((b & 16) ? r.a : r.b, b); }\n"
-"float4 rc(float4 v0, float4 t) {\n"
+"float4 rc(float4 v0, float4 v1, float4 fog, float4 T[4]) {\n"
 "  float4 R[16]; [unroll] for (int k = 0; k < 16; k++) R[k] = 0;\n"
-"  R[4] = v0; R[8] = t; R[12].a = (ctl.y & 31) ? t.a : 1;\n"
+"  R[3] = fog; R[4] = v0; R[5] = v1; R[8] = T[0]; R[9] = T[1]; R[10] = T[2]; R[11] = T[3];\n"
+"  R[12].a = (ctl.y & 31) ? T[0].a : 1;\n"
 "  uint n = min(ctl.x & 255, 8), fl = ctl.x >> 8;\n"
-"  [loop] for (uint s = 0; s < n; s++) {\n"
+"  [unroll] for (uint s = 0; s < 8; s++) if (s < n) {\n"
 "    uint icw = st[s].x, aicw = st[s].y, ocw = st[s].z, aocw = st[s].w;\n"
 "    uint f = ocw >> 12, af = aocw >> 12, d;\n"
 "    R[1] = unpk(fac[(fl & 0x10) ? s : 0].x); R[2] = unpk(fac[(fl & 0x100) ? s : 0].y);\n"
@@ -644,7 +737,7 @@ static const char s_hlsl[] =
 "  float4 o = R[12];\n"
 "  if (fin.x | fin.y) {\n"
 "    uint f0 = fin.x, f1 = fin.y, ff = f1 & 255;\n"
-"    R[1] = unpk(fin.z); R[2] = unpk(fin.w);\n"
+"    R[1] = unpk(fcon.x); R[2] = unpk(fcon.y);\n"
 "    float3 a = (ff & 0x40) ? 1 - R[5].rgb : R[5].rgb, b = (ff & 0x20) ? 1 - R[12].rgb : R[12].rgb;\n"
 "    R[14] = float4((ff & 0x80) ? saturate(a + b) : a + b, 0);\n"
 "    R[15] = float4(rgb(R, f1 >> 24) * rgb(R, f1 >> 16), 0);\n"
@@ -652,19 +745,27 @@ static const char s_hlsl[] =
 "    o = float4(D + C * (1 - A) + B * A, alp(R, f1 >> 8)); }\n"
 "  return saturate(o); }\n"
 "float4 ps(VO i) : SV_Target {\n"
-"  float4 t = textured > 0.5 && (!ctl.z || (ctl.y & 31)) ? t0.Sample(s0, i.uv) : float4(0, 0, 0, 1);\n"
-"  float4 c = ctl.z ? rc(i.c, t) : (textured > 0.5 ? i.c * t : i.c);\n"
+"  float4 c;\n"
+"  if (ctl.z) { uint pg = ctl.y; float4 T[4];\n"
+"    T[0] = fetch(x0, s0, i.t0, pg & 31, tb.x, ctl.w & 15);\n"
+"    T[1] = fetch(x1, s1, i.t1, (pg >> 5) & 31, tb.y, (ctl.w >> 4) & 15);\n"
+"    T[2] = fetch(x2, s2, i.t2, (pg >> 10) & 31, tb.z, (ctl.w >> 8) & 15);\n"
+"    T[3] = fetch(x3, s3, i.t3, (pg >> 15) & 31, tb.w, (ctl.w >> 12) & 15);\n"
+"    c = rc(i.c, i.c1, float4(fogc.rgb, i.fog), T);\n"
+"  } else c = tb.x ? i.c * x0.SampleLevel(s0, i.t0.xy, 0) : i.c;\n"
 "  float a = round(c.a * 255); int f = (int)afunc; bool ok = true;\n"
 "  if (f == 0) ok = false; else if (f == 1) ok = a < aref;\n"
 "  else if (f == 2) ok = a == aref; else if (f == 3) ok = a <= aref;\n"
 "  else if (f == 4) ok = a > aref; else if (f == 5) ok = a != aref;\n"
 "  else if (f == 6) ok = a >= aref;\n"
-"  if (!ok) discard; return c; }\n";
+"  if (!ok) discard; return c; }\n"
+"#endif\n";
 
-static int compile(const char *entry, const char *target, ID3DBlob **out)
+static int compile(const char *entry, const char *target,
+                   const D3D_SHADER_MACRO *defs, ID3DBlob **out)
 {
     ID3DBlob *err = NULL;
-    HRESULT hr = D3DCompile(s_hlsl, sizeof s_hlsl - 1, "nv2a_backend", NULL, NULL,
+    HRESULT hr = D3DCompile(s_hlsl, sizeof s_hlsl - 1, "nv2a_backend", defs, NULL,
                             entry, target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, out, &err);
     if (FAILED(hr)) {
         fprintf(stderr, "[D3D11] %s: %s\n", entry,
@@ -675,12 +776,192 @@ static int compile(const char *entry, const char *target, ID3DBlob **out)
     return 1;
 }
 
+/* The pixel shader for one combiner program, compiled on first use, found by
+ * a hash of its key. When all MAX_PS slots are in use the least recently used
+ * shader goes. */
+#define MAX_PS 1024
+static struct { PsKey k; uint64_t h; uint32_t last; ID3D11PixelShader *ps; } s_psv[MAX_PS];
+static int s_npsv;
+static uint32_t s_ps_tick;
+
+/* Compiled pixel shaders persist across runs, so a combiner program the game
+ * has used before costs nothing the next time it appears. Compiling one takes
+ * tens of milliseconds, which is a visible hitch the first time a scene uses
+ * it. ps_cache_load creates every cached shader at startup; ps_get appends
+ * what it compiles, once per key (s_saved), so the file holds each program
+ * once however often the LRU evicts it. The file holds a hash of the HLSL
+ * source and is ignored when that changes. RECOMP_SHADER_CACHE=<path> moves
+ * it; "0" turns it off.
+ *
+ *   "NV2APS1" NUL, uint64 source hash, then records of
+ *   PsKey, uint32 size, size bytes of bytecode. */
+static uint64_t *s_saved;
+static uint32_t s_nsaved, s_cap_saved;
+
+/* 1 when h is new to the file (and is now recorded), 0 when it is there. */
+static int saved_add(uint64_t h)
+{
+    uint32_t i;
+    for (i = 0; i < s_nsaved; i++)
+        if (s_saved[i] == h)
+            return 0;
+    if (s_nsaved == s_cap_saved) {
+        uint32_t cap = s_cap_saved ? s_cap_saved * 2 : 256;
+        uint64_t *p = (uint64_t *)realloc(s_saved, cap * sizeof *p);
+        if (!p)
+            return 0;
+        s_saved = p;
+        s_cap_saved = cap;
+    }
+    s_saved[s_nsaved++] = h;
+    return 1;
+}
+
+static const char *ps_cache_path(void)
+{
+    const char *e = getenv("RECOMP_SHADER_CACHE");
+    if (e && !strcmp(e, "0"))
+        return NULL;
+    return e ? e : "nv2a_shaders.bin";
+}
+
+static uint64_t ps_source_hash(void)
+{
+    return hash_bytes((const uint8_t *)s_hlsl, (uint32_t)sizeof s_hlsl) ^ sizeof(PsKey);
+}
+
+static uint64_t ps_key_hash(const PsKey *k)
+{
+    return hash_bytes((const uint8_t *)k, (uint32_t)sizeof *k);
+}
+
+static ID3D11PixelShader *ps_find(const PsKey *k, uint64_t h)
+{
+    int i;
+    for (i = 0; i < s_npsv; i++)
+        if (s_psv[i].h == h && !memcmp(&s_psv[i].k, k, sizeof *k)) {
+            s_psv[i].last = ++s_ps_tick;
+            return s_psv[i].ps;
+        }
+    return NULL;
+}
+
+static ID3D11PixelShader *ps_create(const PsKey *k, uint64_t h, const void *code, uint32_t size)
+{
+    ID3D11PixelShader *ps = NULL;
+    int i, v = 0;
+
+    if (FAILED(ID3D11Device_CreatePixelShader(s_dev, code, size, NULL, &ps)) || !ps)
+        return NULL;
+    if (s_npsv < MAX_PS) {
+        v = s_npsv++;
+    } else {
+        for (i = 1; i < MAX_PS; i++)
+            if (s_psv[i].last < s_psv[v].last)
+                v = i;
+        ID3D11PixelShader_Release(s_psv[v].ps);
+    }
+    s_psv[v].k = *k;
+    s_psv[v].h = h;
+    s_psv[v].last = ++s_ps_tick;
+    s_psv[v].ps = ps;
+    return ps;
+}
+
+static void ps_cache_load(void)
+{
+    const char *path = ps_cache_path();
+    FILE *f = path ? fopen(path, "rb") : NULL;
+    char magic[8];
+    uint64_t h;
+    int n = 0;
+
+    if (!f)
+        return;
+    if (fread(magic, 1, 8, f) != 8 || memcmp(magic, "NV2APS1", 8)
+        || fread(&h, 8, 1, f) != 1 || h != ps_source_hash()) {
+        fclose(f);
+        remove(path);                      /* stale: start a new one */
+        fprintf(stderr, "[D3D11] shader cache out of date; rebuilding it\n");
+        return;
+    }
+    while (s_npsv < MAX_PS) {
+        PsKey k;
+        uint32_t size;
+        uint64_t kh;
+        void *code;
+        if (fread(&k, sizeof k, 1, f) != 1 || fread(&size, 4, 1, f) != 1
+            || size > (1u << 20) || !(code = malloc(size)))
+            break;
+        kh = ps_key_hash(&k);
+        if (fread(code, 1, size, f) == size && saved_add(kh) && ps_create(&k, kh, code, size))
+            n++;
+        free(code);
+    }
+    fclose(f);
+    fprintf(stderr, "[D3D11] %d pixel shaders loaded from %s\n", n, path);
+}
+
+static void ps_cache_append(const PsKey *k, uint64_t h, const void *code, uint32_t size)
+{
+    const char *path = ps_cache_path();
+    FILE *f;
+    int fresh;
+
+    if (!path || !saved_add(h))
+        return;
+    f = fopen(path, "rb");
+    fresh = !f;
+    if (f)
+        fclose(f);
+    if (!(f = fopen(path, "ab")))
+        return;
+    if (fresh) {
+        uint64_t h = ps_source_hash();
+        fwrite("NV2APS1", 1, 8, f);
+        fwrite(&h, 8, 1, f);
+    }
+    fwrite(k, sizeof *k, 1, f);
+    fwrite(&size, 4, 1, f);
+    fwrite(code, 1, size, f);
+    fclose(f);
+}
+
+static ID3D11PixelShader *ps_get(const PsKey *k)
+{
+    char st[8 * 64], fin[48], ctl[64];
+    D3D_SHADER_MACRO defs[] = { { "RC_ST", st }, { "RC_FIN", fin },
+                                { "RC_CTL", ctl }, { NULL, NULL } };
+    ID3DBlob *b = NULL;
+    ID3D11PixelShader *ps;
+    uint64_t h = ps_key_hash(k);
+    int i, n = 0;
+
+    if ((ps = ps_find(k, h)) != NULL)
+        return ps;
+    for (i = 0; i < 8; i++)
+        n += snprintf(st + n, sizeof st - n, "%suint4(0x%X,0x%X,0x%X,0x%X)", i ? "," : "",
+                      k->st[i][0], k->st[i][1], k->st[i][2], k->st[i][3]);
+    snprintf(fin, sizeof fin, "uint2(0x%X,0x%X)", k->fin[0], k->fin[1]);
+    snprintf(ctl, sizeof ctl, "uint4(0x%X,0x%X,0x%X,0x%X)",
+             k->ctl[0], k->ctl[1], k->ctl[2], k->ctl[3]);
+    if (!compile("ps", "ps_4_0", defs, &b))
+        return NULL;
+    ps = ps_create(k, h, ID3D10Blob_GetBufferPointer(b), (uint32_t)ID3D10Blob_GetBufferSize(b));
+    if (ps)
+        ps_cache_append(k, h, ID3D10Blob_GetBufferPointer(b),
+                        (uint32_t)ID3D10Blob_GetBufferSize(b));
+    ID3D10Blob_Release(b);
+    return ps;
+}
+
 /* ---- the back end ------------------------------------------------------ */
 
 
+/* Depth arrives as the integer the zeta surface holds: 16 or 24 bits. */
 static float depth_scale(const Nv2aRenderState *rs)
 {
-    return rs->depth_max > 65536.0f ? 16777216.0f : 65536.0f;
+    return rs->zeta_format == 1 ? 65536.0f : 16777216.0f;
 }
 
 static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
@@ -704,9 +985,9 @@ static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
     if (flags & 0x3) {
         Ds *d = ds_get(rs->zeta_va, r->w, r->h);
         if (d) {
-            /* Z24S8: depth in the top 24 bits. ponytail: Z16 surfaces read
-             * the same word and lose their low bits. */
-            float z = (float)(zstencil >> 8) / 16777216.0f;
+            /* Z24S8: depth in the top 24 bits; Z16: the low 16. */
+            float z = rs->zeta_format == 1 ? (float)(zstencil & 0xFFFF) / 65536.0f
+                                           : (float)(zstencil >> 8) / 16777216.0f;
             UINT f = ((flags & 1) ? D3D11_CLEAR_DEPTH : 0)
                    | ((flags & 2) ? D3D11_CLEAR_STENCIL : 0);
             ID3D11DeviceContext_ClearDepthStencilView(s_ctx, d->dsv, f,
@@ -720,7 +1001,9 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     const Nv2aRenderState *rs = b->state;
     Rt *r;
     Ds *d = NULL;
-    ID3D11ShaderResourceView *srv = NULL;
+    ID3D11ShaderResourceView *srv[4] = { NULL, NULL, NULL, NULL };
+    const Nv2aTexture *tx[4];
+    int st;
     D3D11_MAPPED_SUBRESOURCE m;
     D3D11_BLEND_DESC bd;
     D3D11_DEPTH_STENCIL_DESC dd;
@@ -728,64 +1011,100 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     D3D11_VIEWPORT vp;
     D3D11_RECT sc;
     Consts k;
-    UINT stride = sizeof(Nv2aVertex), offset = 0, bytes;
+    UINT stride = sizeof(Nv2aVertex), offset = 0, bytes, first;
     float bf[4];
+    LONGLONG t0, t1;
+    PsKey pk;
+    ID3D11PixelShader *ps;
 
     if (!b->count)
         return;
     r = rt_get(s);
     if (!r)
         return;
-    if (b->texture)
-        srv = tex_get(b->texture);        /* may read back a target: before binding */
+    t0 = qpc();
+    s_st.draws++;
+    /* With combiners every enabled stage samples; without, stage 0 alone. */
+    for (st = 0; st < 4; st++) {
+        tx[st] = b->rc ? b->stages[st] : (st == 0 ? b->texture : NULL);
+        if (tx[st])
+            srv[st] = tex_get(tx[st]);    /* may read back a target: before binding */
+    }
+    s_st.t_tex += qpc() - t0;
     if (rs->zeta_va && (rs->depth_test_enable || rs->depth_write || rs->stencil_enable))
         d = ds_get(rs->zeta_va, r->w, r->h);
 
-    /* Vertices */
+    /* Vertices: appended to a ring, NO_OVERWRITE until it wraps. A DISCARD
+     * on every draw made the driver rename the buffer ~3,600 times a second
+     * in the first level and cost half the executor's time. */
+    t1 = qpc();
     bytes = b->count * stride;
     if (bytes > s_vb_bytes) {
         D3D11_BUFFER_DESC vbd;
         if (s_vb) ID3D11Buffer_Release(s_vb);
         s_vb = NULL;
         memset(&vbd, 0, sizeof vbd);
-        vbd.ByteWidth = bytes * 2;
+        vbd.ByteWidth = bytes * 2 > 8u << 20 ? bytes * 2 : 8u << 20;
         vbd.Usage = D3D11_USAGE_DYNAMIC;
         vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
         vbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         if (FAILED(ID3D11Device_CreateBuffer(s_dev, &vbd, NULL, &s_vb)))
             return;
         s_vb_bytes = vbd.ByteWidth;
+        s_vb_pos = s_vb_bytes;                 /* first map discards */
     }
+    s_vb_pos = (s_vb_pos + stride - 1) / stride * stride;
+    if (s_vb_pos + bytes > s_vb_bytes)
+        s_vb_pos = 0;
     if (FAILED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)s_vb, 0,
-                                       D3D11_MAP_WRITE_DISCARD, 0, &m)))
+                                       s_vb_pos ? D3D11_MAP_WRITE_NO_OVERWRITE
+                                                : D3D11_MAP_WRITE_DISCARD, 0, &m)))
         return;
-    memcpy(m.pData, b->vertices, bytes);
+    memcpy((uint8_t *)m.pData + s_vb_pos, b->vertices, bytes);
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)s_vb, 0);
+    first = s_vb_pos / stride;
+    s_vb_pos += bytes;
 
+    s_st.t_vb += qpc() - t1;
     /* Constants */
+    t1 = qpc();
     k.rt_w = (float)r->w;
     k.rt_h = (float)r->h;
     k.zscale = depth_scale(rs);
-    k.textured = srv ? 1.0f : 0.0f;
-    k.tex_w = b->texture ? (float)b->texture->width : 1.0f;
-    k.tex_h = b->texture ? (float)b->texture->height : 1.0f;
     k.alpha_ref = (float)(rs->alpha_ref & 0xFF);
     k.alpha_func = rs->alpha_test_enable && rs->alpha_func >= 0x200 && rs->alpha_func <= 0x207
                  ? (float)(rs->alpha_func - 0x200) : 7.0f;
-    memset(k.st, 0, sizeof k - offsetof(Consts, st));
+    k.pad[0] = k.pad[1] = k.pad[2] = 0.0f;
+    k.fogc[0] = ((b->fog_color >> 16) & 0xFF) / 255.0f;
+    k.fogc[1] = ((b->fog_color >> 8) & 0xFF) / 255.0f;
+    k.fogc[2] = (b->fog_color & 0xFF) / 255.0f;
+    k.fogc[3] = (b->fog_color >> 24) / 255.0f;
+    for (st = 0; st < 4; st++)
+        k.tb[st] = srv[st] != NULL;
+    memset(k.fac, 0, sizeof k - offsetof(Consts, fac));
+    memset(&pk, 0, sizeof pk);
     if (b->rc) {
         const Nv2aCombiner *c = b->rc;
-        int i;
+        int i, n = (int)(c->control & 0xFF) < 8 ? (int)(c->control & 0xFF) : 8;
         for (i = 0; i < 8; i++) {
-            k.st[i][0] = c->color_icw[i]; k.st[i][1] = c->alpha_icw[i];
-            k.st[i][2] = c->color_ocw[i]; k.st[i][3] = c->alpha_ocw[i];
+            if (i < n) {             /* stages past the count do not run */
+                pk.st[i][0] = c->color_icw[i]; pk.st[i][1] = c->alpha_icw[i];
+                pk.st[i][2] = c->color_ocw[i]; pk.st[i][3] = c->alpha_ocw[i];
+            }
             k.fac[i][0] = c->factor0[i];  k.fac[i][1] = c->factor1[i];
         }
-        k.fin[0] = c->final0; k.fin[1] = c->final1;
-        k.fin[2] = c->final_c0; k.fin[3] = c->final_c1;
-        k.ctl[0] = c->control; k.ctl[1] = c->stage_program; k.ctl[2] = 1;
+        pk.fin[0] = c->final0; pk.fin[1] = c->final1;
+        k.fcon[0] = c->final_c0; k.fcon[1] = c->final_c1;
+        pk.ctl[0] = c->control; pk.ctl[1] = c->stage_program; pk.ctl[2] = 1;
+        for (i = 0; i < 4; i++)
+            if (((c->stage_program >> (i * 5)) & 0x1F) == 5)
+                pk.ctl[3] = b->clip_plane_mode & 0xFFFF;
     }
+    ps = ps_get(&pk);
+    if (!ps)
+        return;
     ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_cb, 0, NULL, &k, 0, 0);
+    s_st.t_cb += qpc() - t1;
 
     /* Blend */
     memset(&bd, 0, sizeof bd);
@@ -831,7 +1150,11 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     memset(&rd, 0, sizeof rd);
     rd.FillMode = D3D11_FILL_SOLID;
     rd.CullMode = D3D11_CULL_NONE;
-    rd.DepthClipEnable = FALSE;
+    /* Depth clipping on, and the shader clamps z at 1 only: geometry nearer
+     * than the near plane (z < 0) is cut away, as on the NV2A. Clamped to 0
+     * it drew in front of everything instead -- a wall or a log beside the
+     * camera flashed across the whole screen when the camera brushed it. */
+    rd.DepthClipEnable = TRUE;
     rd.ScissorEnable = TRUE;
 
     vp.TopLeftX = 0; vp.TopLeftY = 0;
@@ -852,27 +1175,31 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
     ID3D11DeviceContext_IASetVertexBuffers(s_ctx, 0, 1, &s_vb, &stride, &offset);
     ID3D11DeviceContext_VSSetShader(s_ctx, s_vs, NULL, 0);
     ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
-    ID3D11DeviceContext_PSSetShader(s_ctx, s_ps, NULL, 0);
+    ID3D11DeviceContext_PSSetShader(s_ctx, ps, NULL, 0);
     ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
-    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &srv);
-    if (srv) {
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, srv);
+    for (st = 0; st < 4; st++) {
         D3D11_SAMPLER_DESC sd;
-        uint32_t mag = (b->texture->filter >> 24) & 0xF;
-        uint32_t min = (b->texture->filter >> 16) & 0xFF;
+        uint32_t mag, min;
         ID3D11SamplerState *ss;
+        if (!srv[st])
+            continue;
+        mag = (tx[st]->filter >> 24) & 0xF;
+        min = (tx[st]->filter >> 16) & 0xFF;
         memset(&sd, 0, sizeof sd);
         sd.Filter = (mag == 2 || min == 2 || min == 4 || min == 6)
                   ? D3D11_FILTER_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_POINT;
-        sd.AddressU = map_addr(b->texture->addr_u);
-        sd.AddressV = map_addr(b->texture->addr_v);
+        sd.AddressU = map_addr(tx[st]->addr_u);
+        sd.AddressV = map_addr(tx[st]->addr_v);
         sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
         sd.MaxLOD = D3D11_FLOAT32_MAX;
         ss = s_ss_get(&sd);
-        ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 1, &ss);
+        ID3D11DeviceContext_PSSetSamplers(s_ctx, (UINT)st, 1, &ss);
     }
-    ID3D11DeviceContext_Draw(s_ctx, b->count, 0);
+    ID3D11DeviceContext_Draw(s_ctx, b->count, first);
     r->dirty = 1;
+    s_st.t_draw += qpc() - t0;
 }
 
 /* The frame is done: write every target back to guest memory, where the
@@ -897,9 +1224,20 @@ static void be_flip(void)
         if (on < 0)
             on = getenv("RECOMP_D3D11_STATS") != NULL;
         if (on && now - t0 >= 5000) {
-            if (t0)
-                fprintf(stderr, "[D3D11] %.1f flips/s\n",
-                        (s_frame - f0) * 1000.0 / (now - t0));
+            if (t0) {
+                LARGE_INTEGER f;
+                double ms, secs = (now - t0) / 1000.0;
+                QueryPerformanceFrequency(&f);
+                ms = 1000.0 / (double)f.QuadPart / secs;   /* ticks to ms a second */
+                fprintf(stderr, "[D3D11] %.1f flips/s | a second: %.0f draws %.0f ms "
+                        "(textures %.0f ms: %.0f lookups, %.0f decodes) | %.0f readbacks "
+                        "%.0f ms | %.0f uploads %.0f ms | vb %.0f ms cb %.0f ms\n",
+                        (s_frame - f0) / secs, s_st.draws / secs, s_st.t_draw * ms,
+                        s_st.t_tex * ms, s_st.hashes / secs, s_st.decodes / secs,
+                        s_st.readbacks / secs, s_st.t_readback * ms,
+                        s_st.uploads / secs, s_st.t_upload * ms, s_st.t_vb * ms, s_st.t_cb * ms);
+            }
+            memset(&s_st, 0, sizeof s_st);
             t0 = now;
             f0 = s_frame;
         }
@@ -911,12 +1249,21 @@ static const Nv2aBackend s_backend = { be_clear, be_draw, be_flip };
 int d3d11_backend_init(void)
 {
     static const D3D11_INPUT_ELEMENT_DESC il[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_B8G8R8A8_UNORM,     0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+#define EL(name, i, fmt, field) \
+        { name, i, fmt, 0, (UINT)offsetof(Nv2aVertex, field), D3D11_INPUT_PER_VERTEX_DATA, 0 }
+        EL("POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, x),
+        EL("COLOR",    0, DXGI_FORMAT_B8G8R8A8_UNORM,     diffuse),
+        EL("COLOR",    1, DXGI_FORMAT_B8G8R8A8_UNORM,     specular),
+        EL("FOG",      0, DXGI_FORMAT_R32_FLOAT,          fog),
+        EL("TEXCOORD", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, tc[0]),
+        EL("TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, tc[1]),
+        EL("TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, tc[2]),
+        EL("TEXCOORD", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, tc[3]),
+#undef EL
     };
     D3D_FEATURE_LEVEL fl;
-    ID3DBlob *vsb = NULL, *psb = NULL;
+    ID3DBlob *vsb = NULL;
+    PsKey plain;
     D3D11_BUFFER_DESC cbd;
     HRESULT hr;
 
@@ -928,22 +1275,21 @@ int d3d11_backend_init(void)
         return 0;
     }
     ID3D11DeviceContext_QueryInterface(s_ctx, &IID_ID3D11DeviceContext1, (void **)&s_ctx1);
-    if (!compile("vs", "vs_4_0", &vsb) || !compile("ps", "ps_4_0", &psb))
+    if (!compile("vs", "vs_4_0", NULL, &vsb))
         return 0;
     ID3D11Device_CreateVertexShader(s_dev, ID3D10Blob_GetBufferPointer(vsb),
                                     ID3D10Blob_GetBufferSize(vsb), NULL, &s_vs);
-    ID3D11Device_CreatePixelShader(s_dev, ID3D10Blob_GetBufferPointer(psb),
-                                   ID3D10Blob_GetBufferSize(psb), NULL, &s_ps);
-    ID3D11Device_CreateInputLayout(s_dev, il, 3, ID3D10Blob_GetBufferPointer(vsb),
+    ID3D11Device_CreateInputLayout(s_dev, il, (UINT)(sizeof il / sizeof il[0]), ID3D10Blob_GetBufferPointer(vsb),
                                    ID3D10Blob_GetBufferSize(vsb), &s_layout);
     ID3D10Blob_Release(vsb);
-    ID3D10Blob_Release(psb);
     memset(&cbd, 0, sizeof cbd);
     cbd.ByteWidth = sizeof(Consts);
     cbd.Usage = D3D11_USAGE_DEFAULT;
     cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     ID3D11Device_CreateBuffer(s_dev, &cbd, NULL, &s_cb);
-    if (!s_vs || !s_ps || !s_layout || !s_cb) {
+    ps_cache_load();
+    memset(&plain, 0, sizeof plain);       /* texel * diffuse: proves the PS compiles */
+    if (!s_vs || !s_layout || !s_cb || !ps_get(&plain)) {
         fprintf(stderr, "[D3D11] pipeline setup failed; software rasteriser\n");
         return 0;
     }
