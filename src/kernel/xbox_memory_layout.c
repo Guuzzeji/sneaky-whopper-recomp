@@ -4080,6 +4080,26 @@ uint32_t xbox_ContiguousAllocEx(uint32_t size, uint32_t alignment,
         while (q < limit && g_contig_used[q]) q++;
         p = (q + align_pages - 1) & ~(align_pages - 1);
     }
+    /* No fit around the low reserve: retry top-down, as the console kernel
+     * allocates. A title that grabs most of RAM in one block (BlitzTech asks
+     * for 50 MB at startup) only fits across the reserve, and placing it at
+     * the top keeps whatever is left at the bottom for 24-bit requests. */
+    if (!result && n <= limit) {
+        uint32_t lo = lo_page < 1 ? 1 : lo_page;
+        p = (limit - n) & ~(align_pages - 1);
+        while (p >= lo) {
+            for (q = p + n; q > p && !g_contig_used[q - 1]; q--)
+                ;
+            if (q == p) {
+                contig_take(p, n);
+                result = XBOX_CONTIG_BASE + p * CONTIG_PAGE;
+                break;
+            }
+            /* Page q-1 is used, so the block has to end at or below it. */
+            if (q - 1 < n) break;
+            p = (q - 1 - n) & ~(align_pages - 1);
+        }
+    }
     if (result) {
         g_contig_allocs++;
         contig_report("alloc", result, n);
