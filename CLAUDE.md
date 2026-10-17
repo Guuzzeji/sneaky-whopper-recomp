@@ -23,13 +23,15 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 | `analysis/{disasm,func_id,abi}/` | Pipeline output (functions, xrefs, labels, strings, identified functions, ABI). |
 | `src/main.c`, `src/recomp_manual.c` | Host entry point and manual overrides. Made from the xboxrecomp `templates/new-game`. |
 | `src/recomp/gen/` | Generated lifted C (Phase 2 onward). |
+| `tools/p1_survey.py` | P1 survey (gaps, data pointers, vtables, jump tables, D3D usage, threads). Writes to `analysis/p1/`. |
+| `seeds/` | Seed lists for `tools.disasm --seed-functions`. They hold addresses only. |
 | `CMakeLists.txt` | Calls `add_subdirectory(${XBOXRECOMP_DIR})` and links `xboxrecomp`. |
 | `C:\repos\xboxrecomp` | Toolkit, a sibling clone at v0.14.0. `XBOXRECOMP_DIR` defaults to `../xboxrecomp`. |
 
 ## XBE facts
 - **Identity:** retail build, title ID `0x4D5300D3`, NA region. SHA-1 `0B174AD67451D29FDC39DA1A5E6DBA35FF0F0C13`.
 - **Addresses:** base `0x00010000`, image size `0x330600`, entry `0x000637AA`, kernel thunks at `0x002AFB20`.
-- **Code sections:** `.text`, D3D, XGRPH, DSOUND, WMADEC, XMV, XPP. Code status of DOLBY is unknown.
+- **Code sections:** `.text`, D3D, XGRPH, DSOUND, WMADEC, XMV, XPP. DOLBY is flagged X but holds MCPX APU DSP microcode (the Dolby encoder). DSOUND references it as data. Never lift it.
 - **Data sections:** `.rdata`, `.data`, `.data1`.
 - **XDK:** build 5849 for all libraries (XAPILIB, D3D8, XBOXKRNL, LIBCMT, XGRAPHC, DSOUND, XVOICE, XMV).
 - **Kernel imports:** 160, and the xboxrecomp kernel bridge routes all of them.
@@ -37,14 +39,19 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
   - 13,318 functions (10,554 in `.text`)
   - 2,345 thiscall functions (C++)
   - 698 function pointers in data tables
-- D3D8 is statically linked, so the NV2A pushbuffer path is likely. This is still to be confirmed in P1.
+- D3D8 (non-LTCG) is statically linked. **Graphics path: NV2A pushbuffer executor.** This was decided in P1; see `docs/P1_FINDINGS.md`. Override only the D3D entry points that wait on hardware.
+- Applied function names carry a prefix: `xdk_` for XbSymbolDatabase names and `crt_` for Ghidra FidDb names. Without it, XDK names collide with toolkit runtime symbols.
 
 ## Environment
 - **Compiler:** MSVC, from VS 2022 Community at `C:\Program Files\Microsoft Visual Studio\2022\Community`. Plain shells don't have `cl`/`ninja` on PATH. Wrap commands:
   `cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul && <command>'`
 - **Python:** use `C:\repos\sneak-king-recomp\.venv\Scripts\python.exe` (packages: capstone, pytest, pefile, numpy). The system Python is uv-managed, so `pip install` is blocked.
 - **Running toolkit tools:** run `tools.*` with the toolkit as the working directory (`C:\repos\xboxrecomp`). Set `PYTHONIOENCODING=utf-8` so report printing doesn't crash.
-- **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921`. ghidra-mcp is also available.
+- **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921\ghidra_12.1.4_PUBLIC` (note the nested folder). ghidra-mcp is also available.
+  - Ghidra 12 has no Jython. Run the toolkit's `.py` Ghidra scripts under PyGhidra, which is installed in the venv, with `@runtime PyGhidra`. The command is in `docs/P1_FINDINGS.md`.
+  - The analyzed project is in `C:\repos\xboxrecomp\tools\ghidra_naming\work\`. That repo's `.git/info/exclude` keeps it out of git.
+- **XbSymbolDatabase:** run the CLI as `toolkit\xbsymbol\win_x64\bin\XbSymbolDatabaseCLI.exe <xbe> -e`.
+- **REA:** its Ghidra decompiler provider is not configured on this machine. It needs `GHIDRA_INSTALL_DIR` in the MCP server env, and on Windows it accepts only PE files.
 - **xemu:** the reference emulator, at `toolkit\xemu\xemu.exe` (gitignored). The `config\` folder holds the user's BIOS, MCPX and HDD image. Settings live in `%APPDATA%\xemu\xemu\xemu.toml`, which uses absolute paths, so update it whenever the folder moves.
 - **Known environment issue:** this machine blocks executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (805 passed, 7 skipped):
   `cmd /c 'set TMP=C:\repos\xboxrecomp\build\conftmp&& set TEMP=C:\repos\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd /d C:\repos\xboxrecomp && <venv python> -m pytest tools/ -q'`

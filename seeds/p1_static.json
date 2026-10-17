@@ -1,0 +1,1154 @@
+[
+ {
+  "start": "0x00011000",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x00013760",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x00028830",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00061780",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x0006470F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00064A0F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00068CD0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00069744",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0013A074",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00149910",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x0015C6B0",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x0018B650",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0019C380",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x001B1E1E",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B21CA",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x001B2C51",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B2EF7",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B3547",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B5722",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B6EF2",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B706A",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B7567",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B771B",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B7B06",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B7D3C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B8034",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B81E9",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B900F",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001B93BF",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BA730",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BA831",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BA967",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BAA0D",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BAF53",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BB200",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BC49D",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001BC838",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001D001C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001D001D",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001D0020",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x001D8D60",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x001D9330",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x001EFD90",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x001EFDE0",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x001F0330",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00202E74",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00206172",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00206425",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00206433",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0020646E",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0020656E",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00206A62",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00206C61",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00206D65",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00207463",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00207872",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00207972",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0020BA9C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0020BD68",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0020BD6C",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002182CA",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002182E2",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0022496B",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x00234A20",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234A4C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234A78",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234AC8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234B0C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234B48",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234B80",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234BD0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234C28",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234C70",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234C80",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234C94",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CCC",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CD0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CD4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CD8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CDC",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CE0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CE4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CE8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CF0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CF8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234CFC",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234D00",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234D04",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234D08",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00234E34",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00234EB4",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023532C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235330",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235334",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235338",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023533C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235340",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235344",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235348",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023534C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235350",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235354",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235358",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023535C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235364",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023536C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235370",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235374",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235378",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002353C8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002356D4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002356F0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023570C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235730",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235750",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235774",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235794",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002357B4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002357D4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002357F8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235818",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235830",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023584C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023585C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235870",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235880",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235894",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002358A8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002358C0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002358D0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002358E0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002358F0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235900",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235910",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235920",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235930",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235940",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235950",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235960",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235970",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235984",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002359A4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002359C4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002359E4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235A04",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235A24",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235A44",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235A64",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235A88",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235A9C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235AB0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235AC4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235AD8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235AEC",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235B00",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235B14",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235B28",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235B48",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235B58",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235B70",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235B8C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235BAC",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235BCC",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235BE8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235BF0",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235C18",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235C34",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235C50",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235C6C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235C8C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235CA8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235CC8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235CE8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235D00",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235D18",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235D30",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235D50",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235D6C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235D88",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235DA4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235DBC",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235DD8",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235DF4",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235E0C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235E28",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235E44",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235E60",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235E7C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00235E98",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0023702C",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00237035",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00237041",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00237049",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002377A4",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002377CC",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002377D4",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002377DC",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002377DE",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002377E4",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002377E6",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023D036",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F173",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F2A1",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F2B9",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F2D5",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F2F5",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F311",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F349",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F36D",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F3D3",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F3EF",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F40B",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F427",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F443",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F45F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F49F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F4DB",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F51B",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F53F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F59B",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F5E7",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F607",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F623",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F63F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F660",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F665",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F66A",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F66F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F674",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F679",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F683",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F6B3",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F6B8",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F6BD",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F6CB",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0023F6EC",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0024128A",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002412C2",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002412E2",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0024133B",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002413A3",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0024142D",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241451",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241475",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002414BD",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002414DD",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002414FD",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241502",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241507",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0024150C",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241511",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0024153F",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241544",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0024155C",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241574",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002415CB",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002415E3",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002415FB",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241613",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241618",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241C6A",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241CA6",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00241CAB",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00242788",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002427F0",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00242893",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00242DB7",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x0024342C",
+  "note": "ghidra entry in coverage gap"
+ },
+ {
+  "start": "0x00250000",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00250020",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0025002B",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00250063",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00250073",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0026001D",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00260025",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00286DF8",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x00290028",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00290029",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0029002C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0029006C",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x0029657A",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00296B63",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x00297325",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002A002D",
+  "note": "data-table pointer into coverage gap"
+ },
+ {
+  "start": "0x002A8527",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002A8546",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002AFAF4",
+  "note": "xbsymbol/fidb name"
+ },
+ {
+  "start": "0x002AFAF8",
+  "note": "xbsymbol/fidb name"
+ }
+]

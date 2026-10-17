@@ -24,30 +24,33 @@ Rules for every phase:
 
 **Exit:** tools installed, toolkit tests green, game extracted, analysis stats recorded.
 
-## P1 — Analysis
+## P1 — Analysis ✅
 
-- [ ] Review function discovery coverage.
+- [x] Review function discovery coverage.
   - 13,318 functions found.
   - Spot-check gaps in `.text`.
   - Decide whether `DOLBY` holds code; it has 0 functions and is not marked executable. Check its xrefs.
-- [ ] Load `default.xbe` into Ghidra.
+- [x] Load `default.xbe` into Ghidra.
   - Try ghidra-xbe or XbSymbolDatabase to name the XDK functions (D3D, DSound, XAPI, XMV).
   - Feed the names back with `tools/ghidra_naming`.
-- [ ] Inventory the indirect control flow:
+- [x] Inventory the indirect control flow:
   - jump tables
   - vtables (2,345 thiscall functions)
   - the 698 function addresses found in data tables
-- [ ] **Choose the graphics path.**
+- [x] **Choose the graphics path.**
   - Option A: D3D8 HLE.
   - Option B: the NV2A pushbuffer executor.
   - Check whether the game calls `D3DDevice_*` through the linked D3D section, and whether it writes pushbuffers directly.
-- [ ] Map the threads: find where the game calls `PsCreateSystemThreadEx`.
-- [ ] Study [blinx2-recomp](https://github.com/apexJCL/blinx2-recomp), the most complete OG Xbox recomp. Note which patterns to copy.
+- [x] Map the threads: find where the game calls `PsCreateSystemThreadEx`.
+- [x] Study [blinx2-recomp](https://github.com/apexJCL/blinx2-recomp), the most complete OG Xbox recomp. Note which patterns to copy.
 
 **Exit:** a function map, a list of indirect flow, a recorded graphics-path decision and a thread map.
 
+**Result:** see [P1_FINDINGS.md](P1_FINDINGS.md). Graphics path: **B (NV2A pushbuffer executor)**, overriding only the hardware-wait entry points. DOLBY is APU DSP microcode, not x86. 690 XDK/CRT names applied; 288 seeds in `seeds/p1_static.json`.
+
 ## P2 — First lift and link
 
+- [ ] Re-run `tools.disasm --seed-functions seeds/p1_static.json`, then `func_id`/`abi_analysis`, and re-apply `analysis/names_combined.json` via `merge_names.py --names-json ... --apply`.
 - [ ] Run `tools.recomp --all --split 250 --gen-dir src/recomp/gen`.
 - [ ] Fix every unhandled-instruction comment (`/* mnemonic */`) in the generated code. Fix them in the lifter config or upstream, never in `gen/`.
 - [ ] Add the overrides MSVC needs: the negative-index jump tables in the CRT `memcpy`/`memmove`.
