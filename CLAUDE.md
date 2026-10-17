@@ -46,7 +46,8 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 - **Running toolkit tools:** run `tools.*` with the toolkit as the working directory (`C:\repos\xboxrecomp`). Set `PYTHONIOENCODING=utf-8` so report printing doesn't crash.
 - **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921`. ghidra-mcp is also available.
 - **xemu:** installed through winget as the reference emulator. It needs the user's own BIOS/MCPX dumps.
-- **Known environment issue:** the toolkit conformance "corpus" stage fails with `PermissionError: [WinError 5]` when it launches `corpus_harness.exe` from `%TEMP%`. The core conformance run passes: 6,351 vectors, 0 mismatches.
+- **Known environment issue:** this machine blocks executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (805 passed, 7 skipped):
+  `cmd /c 'set TMP=C:\repos\xboxrecomp\build\conftmp&& set TEMP=C:\repos\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd /d C:\repos\xboxrecomp && <venv python> -m pytest tools/ -q'`
 
 ## Pipeline commands
 Run these from `C:\repos\xboxrecomp`, with `$py` set to the venv Python, `$x` to `C:\repos\sneak-king-recomp\game\default.xbe` and `$a` to `C:\repos\sneak-king-recomp\analysis`.

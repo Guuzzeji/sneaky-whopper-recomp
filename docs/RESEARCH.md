@@ -709,7 +709,7 @@ The state of this machine after Phase 0 setup:
 - **Toolkit tests:**
   - Without MSVC on PATH: 711 passed, 98 skipped, 3 failed.
   - Under `vcvars64`: `fpdiff` and the fuzz test pass, and the conformance run reports **6,351 vectors, 0 mismatches**.
-  - The conformance *corpus* stage still fails with `PermissionError: [WinError 5] Access is denied` when it launches the freshly built `corpus_harness.exe` from `%TEMP%`. This is an environment issue (antivirus or sandbox blocking execution of new binaries in Temp), not a lifter problem. If it matters, add an AV exclusion for the temp folder or run the harness elsewhere.
+  - The conformance *corpus* stage fails with `PermissionError: [WinError 5] Access is denied` when it launches the freshly built `corpus_harness.exe` from `%TEMP%`. This machine blocks running new binaries from Temp. Redirecting `TMP`/`TEMP` to `C:\repos\xboxrecomp\build\conftmp` fixes it: the full suite then gives **805 passed, 7 skipped, 0 failed**. The command is in `CLAUDE.md`.
 - **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921` (JDK 25 installed). The `ghidra-xbe` loader is not installed yet (Phase 1).
 - **xemu:** installed through winget for reference comparison. It needs **your own** console BIOS and MCPX boot ROM dumps, plus an HDD image, to run. Nothing in this repo provides those.
 - **Legal hygiene:** the ISO, extracted `game/`, `analysis/` and generated `src/recomp/gen/` are all git-ignored. Never commit or upload game data or derived disassembly.
