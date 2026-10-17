@@ -1703,6 +1703,39 @@ class Lifter:
             expr = {"stc": "1", "clc": "0", "cmc": "!_cf"}[m]
             return [f"_cf = {expr}; /* {m} */"]
 
+        # ── CPU probes and ring-0 housekeeping ──
+        #
+        # Every retail Xbox has the same CPU: a 733 MHz Pentium III-class
+        # part (family 6, model 8, stepping 10, 128 KB L2, MMX + SSE, no
+        # SSE2). The CRT, XGRAPHICS and WMADEC probe it to pick an SSE path;
+        # left unlifted, cpuid kept stale registers and pushfd/popfd
+        # unbalanced the stack.
+        if m == "cpuid":
+            return [
+                "switch (eax) { /* cpuid: the Xbox CPU */",
+                "case 0: eax = 2; ebx = 0x756E6547u; edx = 0x49656E69u;"
+                " ecx = 0x6C65746Eu; break; /* GenuineIntel */",
+                "case 1: eax = 0x0000068Au; ebx = 0; ecx = 0;"
+                " edx = 0x0383F9FFu; break;",
+                "case 2: eax = 0x03020101u; ebx = 0; ecx = 0;"
+                " edx = 0x0C040841u; break;",
+                "default: eax = ebx = ecx = edx = 0; break; }",
+            ]
+        # ponytail: pushfd stores IF, bit 1 and DF only, not the lazy
+        # arithmetic flags, and popfd restores DF only. That covers the
+        # ID-bit cpuid probe (the bit never toggles, so the guest takes its
+        # no-cpuid path) and save/restore pairs. Materialise the lazy flags
+        # if guest code ever branches on popped flags.
+        if m == "pushfd":
+            return ["PUSH32(esp, 0x202u | ((uint32_t)g_df << 10)); /* pushfd */"]
+        if m == "popfd":
+            return ["{ uint32_t _fl; POP32(esp, _fl); g_df = (_fl >> 10) & 1u; }"
+                    " /* popfd */"]
+        # One guest CPU, interrupts delivered at safe points, and coherent
+        # host caches: these have nothing to do.
+        if m in ("cli", "sti", "wbinvd", "invd"):
+            return [f"/* {m}: no effect on the host */"]
+
         # ── Time stamp counter ──
         #
         # The guest reads wall-clock time through it. Xbox's
