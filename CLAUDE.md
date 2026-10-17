@@ -45,7 +45,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 - **Python:** use `C:\repos\sneak-king-recomp\.venv\Scripts\python.exe` (packages: capstone, pytest, pefile, numpy). The system Python is uv-managed, so `pip install` is blocked.
 - **Running toolkit tools:** run `tools.*` with the toolkit as the working directory (`C:\repos\xboxrecomp`). Set `PYTHONIOENCODING=utf-8` so report printing doesn't crash.
 - **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921`. ghidra-mcp is also available.
-- **xemu:** installed through winget as the reference emulator. It needs the user's own BIOS/MCPX dumps.
+- **xemu:** the reference emulator, at `toolkit\xemu\xemu.exe` (gitignored). The `config\` folder holds the user's BIOS, MCPX and HDD image. Settings live in `%APPDATA%\xemu\xemu\xemu.toml`, which uses absolute paths, so update it whenever the folder moves.
 - **Known environment issue:** this machine blocks executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (805 passed, 7 skipped):
   `cmd /c 'set TMP=C:\repos\xboxrecomp\build\conftmp&& set TEMP=C:\repos\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd /d C:\repos\xboxrecomp && <venv python> -m pytest tools/ -q'`
 

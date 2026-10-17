@@ -22,3 +22,6 @@ saves/
 *.log
 __pycache__/
 .venv/
+
+# Local tools (xemu with BIOS/HDD dumps)
+toolkit/
