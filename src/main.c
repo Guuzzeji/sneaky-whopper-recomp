@@ -311,14 +311,15 @@ static DWORD WINAPI sampler_proc(LPVOID arg)
     static char keys[SLOTS][48];
     static unsigned hits[SLOTS];
     static uint64_t stack[WORDS];
-    DWORD end = GetTickCount() + (DWORD)(uintptr_t)arg * 1000;
+    DWORD end;
     uintptr_t lo = (uintptr_t)GetModuleHandleA(NULL);
     uintptr_t hi = lo + ((IMAGE_NT_HEADERS *)(lo +
                    ((IMAGE_DOS_HEADER *)lo)->e_lfanew))->OptionalHeader.SizeOfImage;
     unsigned total = 0;
     int used = 0, i, k;
 
-    Sleep(2000);                        /* past the XBE load */
+    Sleep(getenv("RECOMP_SAMPLE_DELAY") ? atoi(getenv("RECOMP_SAMPLE_DELAY")) * 1000 : 2000); /* past the XBE load, or to a later scene */
+    end = GetTickCount() + (DWORD)(uintptr_t)arg * 1000;
     while ((LONG)(end - GetTickCount()) > 0) {
         CONTEXT ctx;
         MEMORY_BASIC_INFORMATION mbi;
@@ -445,6 +446,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         fprintf(stderr, "[BOOT] emulated APU %s\n",
                 g_apu_state ? "up" : "FAILED to initialise");
     }
+
+    /* The vblank interrupt is not optional here. The XMV player (intro
+     * movies, cutscenes) presents a frame when D3D's vblank count reaches the
+     * frame's time: with no vblank the count never moves, the first two
+     * packets of KingGamesIdent.xmv are read and nothing is ever shown.
+     * RECOMP_VBLANK=0 still turns it off. */
+    if (!getenv("RECOMP_VBLANK"))
+        _putenv("RECOMP_VBLANK=1");
+    else if (strcmp(getenv("RECOMP_VBLANK"), "0") == 0)
+        _putenv("RECOMP_VBLANK=");
 
     /* Step 3: Initialize Xbox kernel */
     printf("Initializing Xbox kernel replacement...\n");

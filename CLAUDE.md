@@ -90,7 +90,7 @@ Other useful switches:
 - `RECOMP_SAMPLE_SECS=N`: profiles the main thread. Resolve its output with `tools/resolve_rva.py`.
 - `RECOMP_PEEK=0xVA,...`: reads guest dwords.
 
-The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3).
+The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth. `main.c` turns `RECOMP_VBLANK` on by default, because the XMV player needs it.
 
 ## Debug loop (P3+)
 - **Indirect calls:**

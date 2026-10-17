@@ -68,7 +68,7 @@ Rules for every phase:
 ## P3 — Boot ✅
 
 - [x] Get through the CRT/XAPI init, TLS, heap and stack.
-- [ ] Make `D:\` file I/O work against `game/`. Opens and size queries work (`_T_E_S_T.___`, `packages\w_gameboot_fetm.xbp`); the game has not issued a package read yet, see "Next" below.
+- [x] Make `D:\` file I/O work against `game/`. Packages load through the APC loader thread (P4, below).
 - [ ] Run the indirect-call feedback loop:
   1. Build with `RECOMP_ICALL_FEEDBACK`.
   2. Merge the observed targets into `icall_seeds.json`.
@@ -95,15 +95,39 @@ What it took:
 - **DSP reset every DoWork**: DSOUND checks the EP heartbeat word `0xFE85A018` for `0xCCCCCC`, which the Dolby microcode writes on hardware. Without it, DoWork reset both DSPs with a 10 ms stall on every call, taking most of each frame. Upstream: the APU frame clock writes the heartbeat.
 - **Diagnostics added**: `RECOMP_SAMPLE_SECS=N` samples the main thread's host stack (`main.c`), and `tools/resolve_rva.py` names the RVAs from `build/sneakking_recomp.map`.
 
-**Next (start of P4):** the boot mode (`CMode_GameBoot`, world `packages/w_GameBoot`) checks `w_gameboot_fetm.xbp` (open, size, close) and then idles. It never reads a package or opens `movies\BlitzIdent.xmv`. The main thread is otherwise idle in the frame limiter (`0x1A4680`). Find the state it is waiting for: trace the mode update under `0x1B0D60`, and compare the file sequence with xemu.
+**Next (start of P4):** the boot mode (`CMode_GameBoot`, world `packages/w_GameBoot`) checks `w_gameboot_fetm.xbp` (open, size, close) and then idles. Solved in P4: the package read was an APC that the toolkit dropped.
 
 ## P4 — First pixels
 
-- [ ] Get the boot logos and splash screen on screen.
+- [x] Get the boot logos and splash screen on screen: the copyright splash, the King Games and Blitz idents, the intro movie and "Press START".
 - [ ] Render the main menu correctly: textures, swizzle, blending and register combiners.
 - [ ] Compare frames with xemu. Use RenderDoc to inspect the host D3D11 output.
 
 **Exit:** the main menu renders and matches xemu visually.
+
+**Status:** paused after the boot sequence. The main menu sits behind "Press START", so it needs input from P5. The two unticked items above, and the open items below, move to **P5.4**.
+
+**Progress (2026-10-16):** the boot loads 14 packages, draws the copyright splash, plays the idents and the intro movie, and reaches "Press START". The toolkit fixes are on branch `sneak-king-p3-boot`:
+
+- **D: is read-only.** At startup (`0x77070`) the game creates `d:\_T_E_S_T.___`. If that succeeds, it believes it runs from a writable dev drive and turns off its DVD file cache. `bridge_create_file_open` now refuses write access and create dispositions on `\Device\CdRom0` (`xbox_path_is_dvd`).
+- **APCs.** BlitzTech gives all package I/O to its loader thread (`0x71260`), which only waits alertably and receives work through `QueueUserAPC` (`0x776C0` queues `0x76730`). `NtQueueApcThread` was a stub that dropped the APC, so no package was ever read. Now it queues a host APC that runs the guest routine at the thread's next alertable wait. I/O completion APCs (`ReadFileEx`) are queued the same way and no longer run inline. Inline delivery ran the completion (`0x74080`) before the issuer set its in-flight flag (`0x2F2FB8`), which stalled the second package. `RECOMP_IO_APC_INLINE=1` restores the old behaviour.
+- **Inline-array batches go through the fixed-function transform.** The splash quads arrive as `INLINE_ARRAY` in object space (±270, ±202). The executor drew them as screen space, which filled the top-left corner with a magnified texture.
+
+- **XMV timing is driven by vblank.** The player (`GetNextFrame`, `0x27F0C2`) times video by D3D's vblank count (`D3DDevice_GetDisplayFieldStatus`) and syncs it to the audio stream callback (`0x27EA78`). The count never moved, and the movie stopped after two packets. Three problems:
+  - Vblank was off. `main.c` now turns `RECOMP_VBLANK` on by default; `RECOMP_VBLANK=0` turns it off.
+  - The vblank tick ran at about 32 Hz on the 15.6 ms system timer. It is now on a `QueryPerformanceCounter` schedule and drains DPCs after each vblank.
+  - About a third of the vblanks went uncounted: the ack thread cleared `PMC_INTR_0` between D3D's ISR (`0x1F9670`) and its DPC (`0x1F9870`). A 0.5 ms hold (`g_nv2a_irq_hold_until`) now keeps the bits set for the DPC.
+- **Depth precision in the fixed-function path.** The movie quad sits at the far plane: z is 16777214.67 against a Z24 clear value of 16777215, with `LESS`. Float rounding (in an 8e12 clip z, in the barycentric sum, and in the final cast) flipped pixels to failing, which drew a crosshatch over every movie. Now the transform runs in double, z is truncated to the integer the depth buffer holds, and interpolation uses the delta form.
+
+`RECOMP_FRAME_TRACE` now also prints the raw position, UV and transformed position of the first four vertices of each fixed-function batch. `main.c` adds `RECOMP_SAMPLE_DELAY=<s>`, which starts the sampler later.
+
+**Open:**
+- The intro movie plays at about half speed, so the menu arrives after about 2 minutes. In the profile, 44% is GPU fence waits on the software PB executor, and 32% is the lifted MMX YUV→RGB copy (`sub_00280085`).
+- The Press START background video reads one packet and stalls. The wrapper's `GetNextFrame` thunk `0x12BA50` is never called.
+- A faint box shows around the loading icon.
+- Reaching the main menu needs input (P5).
+
+These are tracked in P5.4.
 
 ## P5 — Input, audio, video
 
@@ -115,6 +139,18 @@ What it took:
 - [ ] FMV: XMV movies play, through `tools/xmv` and Media Foundation.
 
 **Exit:** the menu is fully navigable with sound and the intro movies play.
+
+## P5.4 — Finish P4: full rendering
+
+Starts once P5 is complete, because input is what gets the game past "Press START" and into the menus. It finishes the rest of P4 so that rendering is complete.
+
+- [ ] Render the main menu correctly: textures, swizzle, blending and register combiners.
+- [ ] Compare frames with xemu. Use RenderDoc to inspect the host D3D11 output.
+- [ ] Get the Press START background video playing. It reads one packet and stalls; the wrapper's `GetNextFrame` thunk `0x12BA50` is never called.
+- [ ] Get movies to full speed. The intro plays at about 0.5×: GPU fence waits on the software PB executor take 44%, and the lifted MMX YUV→RGB copy (`sub_00280085`) takes 32%.
+- [ ] Remove the faint box around the loading icon.
+
+**Exit:** every screen from boot through the main menu and its submenus renders and matches xemu visually, and movies play at full speed.
 
 ## P6 — Gameplay
 
