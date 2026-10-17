@@ -36,7 +36,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 - **XDK:** build 5849 for all libraries (XAPILIB, D3D8, XBOXKRNL, LIBCMT, XGRAPHC, DSOUND, XVOICE, XMV).
 - **Kernel imports:** 160, and the xboxrecomp kernel bridge routes all of them.
 - **Analysis counts:**
-  - 13,318 functions (10,554 in `.text`)
+  - 13,650 functions after the P2 seeds (13,318 in P1; 10,554 in `.text`)
   - 2,345 thiscall functions (C++)
   - 698 function pointers in data tables
 - D3D8 (non-LTCG) is statically linked. **Graphics path: NV2A pushbuffer executor.** This was decided in P1; see `docs/P1_FINDINGS.md`. Override only the D3D entry points that wait on hardware.
@@ -51,7 +51,10 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
   - Ghidra 12 has no Jython. Run the toolkit's `.py` Ghidra scripts under PyGhidra, which is installed in the venv, with `@runtime PyGhidra`. The command is in `docs/P1_FINDINGS.md`.
   - The analyzed project is in `C:\repos\xboxrecomp\tools\ghidra_naming\work\`. That repo's `.git/info/exclude` keeps it out of git.
 - **XbSymbolDatabase:** run the CLI as `toolkit\xbsymbol\win_x64\bin\XbSymbolDatabaseCLI.exe <xbe> -e`.
-- **REA:** its Ghidra decompiler provider is not configured on this machine. It needs `GHIDRA_INSTALL_DIR` in the MCP server env, and on Windows it accepts only PE files.
+- **REA: always use it** (the `mcp__rea__*` tools) for reverse-engineering questions: decompiling, reading a function's assembly, xrefs, callers/callees, strings, and checking a lifted function against the original. Prefer it over raw capstone dumps or grepping `analysis/disasm/asm`.
+  - Open `analysis/rea/default_flat.exe` with `open_binary`. That file is the XBE flat image wrapped in a PE32, because REA's Windows Ghidra provider accepts only PE. Its addresses match the XBE VAs and `functions.json` 1:1. Regenerate it with `.venv\Scripts\python.exe tools\xbe_to_pe.py`.
+  - The provider is Ghidra 12.1.4. The first query waits for auto-analysis to finish, which takes a few minutes.
+  - The session database is temporary. Names and comments set through REA are lost when it closes, so put lasting names in `analysis/names_combined.json` instead.
 - **xemu:** the reference emulator, at `toolkit\xemu\xemu.exe` (gitignored). The `config\` folder holds the user's BIOS, MCPX and HDD image. Settings live in `%APPDATA%\xemu\xemu\xemu.toml`, which uses absolute paths, so update it whenever the folder moves.
 - **Known environment issue:** this machine blocks executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (805 passed, 7 skipped):
   `cmd /c 'set TMP=C:\repos\xboxrecomp\build\conftmp&& set TEMP=C:\repos\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd /d C:\repos\xboxrecomp && <venv python> -m pytest tools/ -q'`
@@ -65,7 +68,7 @@ Run these from `C:\repos\xboxrecomp`, with `$py` set to the venv Python, `$x` to
 & $py -m tools.disasm $x -o $a\disasm                       # ~8 min, all executable sections
 & $py -m tools.func_id $x --functions $a\disasm\functions.json --strings $a\disasm\strings.json --xrefs $a\disasm\xrefs.json -o $a\func_id
 & $py -m tools.abi_analysis $x --disasm-dir $a\disasm --func-id-dir $a\func_id --output-dir $a\abi
-& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir C:\repos\sneak-king-recomp\src\recomp\gen --game-name "Sneak King"
+& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir C:\repos\sneak-king-recomp\src\recomp\gen --game-name "Sneak King" --exclude-manual C:\repos\sneak-king-recomp\src\recomp_manual.c
 ```
 
 Build from the repo root inside the vcvars wrapper. Keep parallelism low, because the generated files are huge:
@@ -90,5 +93,5 @@ Run the exe from the repo root, because `main.c` uses the relative paths `game\d
 - **Compare against reference:**
   - Compare behaviour with xemu.
   - Use RenderDoc on the host D3D11 output.
-  - Use Ghidra for naming.
+  - Use REA to decompile and inspect the original function. Use Ghidra headless (`ghidra_naming`) for bulk naming.
 - **Upstream fixes:** keep toolkit fixes small, and send them upstream to xboxrecomp when they are generic.

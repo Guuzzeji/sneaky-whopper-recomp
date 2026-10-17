@@ -38,16 +38,10 @@
  *   xbox_memory_layout.obj : error LNK2005: g_icall_count already defined
  *                            in recomp_manual.obj
  */
-extern volatile uint32_t g_icall_trace[16];
-extern volatile uint32_t g_icall_trace_idx;
-extern volatile uint64_t g_icall_count;
-
-typedef void (*recomp_func_t)(void);
-
-/* ── Register state (defined in xbox_memory_layout.c) ──────── */
-
-extern uint32_t g_eax;
-extern ptrdiff_t g_xbox_mem_offset;
+/* recomp_types.h declares them, plus recomp_func_t and the register file.
+ * It declares the registers RECOMP_TLS: a plain `extern uint32_t g_eax;`
+ * would not resolve to the calling thread's copy (see main.c). */
+#include "recomp/gen/recomp_types.h"
 
 /* ── Manual function overrides ─────────────────────────────── */
 
@@ -197,4 +191,15 @@ void recomp_unimpl(const char *text, uint32_t va)
         fflush(stderr);
     }
     if (stop) abort();
+}
+
+/* ── Overrides ────────────────────────────────────────────────────────── */
+
+/* XAPI startup kernel patch (no args, plain ret). It rewrites one dword of
+ * kernel code at 0x8003xxxx chosen by XboxKrnlVersion, under cli/sti, then
+ * tail-jumps to 0x641FE, which installs a GDT descriptor with sgdt + a far
+ * jmp (0x6A1B8). There is no guest kernel or GDT here, so neither applies. */
+void sub_00064262(void)
+{
+    g_esp += 4; /* ret */
 }

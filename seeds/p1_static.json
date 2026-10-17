@@ -180,10 +180,6 @@
   "note": "xbsymbol/fidb name"
  },
  {
-  "start": "0x00202E74",
-  "note": "data-table pointer into coverage gap"
- },
- {
   "start": "0x00206172",
   "note": "data-table pointer into coverage gap"
  },
@@ -194,50 +190,6 @@
  {
   "start": "0x00206433",
   "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x0020646E",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x0020656E",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00206A62",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00206C61",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00206D65",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00207463",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00207872",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00207972",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x0020BA9C",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x0020BD68",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x0020BD6C",
-  "note": "xbsymbol/fidb name"
  },
  {
   "start": "0x002182CA",
@@ -252,123 +204,7 @@
   "note": "ghidra entry in coverage gap"
  },
  {
-  "start": "0x00234A20",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234A4C",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234A78",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234AC8",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234B0C",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234B48",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234B80",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234BD0",
-  "note": "data-table pointer into coverage gap"
- },
- {
   "start": "0x00234C28",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234C70",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234C80",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234C94",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CCC",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CD0",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CD4",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CD8",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CDC",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CE0",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CE4",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CE8",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CF0",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CF8",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234CFC",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234D00",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234D04",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234D08",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00234E34",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x00234EB4",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x0023532C",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00235330",
   "note": "data-table pointer into coverage gap"
  },
  {
@@ -377,14 +213,6 @@
  },
  {
   "start": "0x00235338",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x0023533C",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00235340",
   "note": "data-table pointer into coverage gap"
  },
  {
@@ -408,14 +236,6 @@
   "note": "data-table pointer into coverage gap"
  },
  {
-  "start": "0x00235358",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x0023535C",
-  "note": "data-table pointer into coverage gap"
- },
- {
   "start": "0x00235364",
   "note": "data-table pointer into coverage gap"
  },
@@ -424,15 +244,7 @@
   "note": "data-table pointer into coverage gap"
  },
  {
-  "start": "0x00235370",
-  "note": "data-table pointer into coverage gap"
- },
- {
   "start": "0x00235374",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00235378",
   "note": "data-table pointer into coverage gap"
  },
  {
@@ -752,54 +564,6 @@
   "note": "data-table pointer into coverage gap"
  },
  {
-  "start": "0x00235E98",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x0023702C",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x00237035",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x00237041",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x00237049",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002377A4",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002377CC",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002377D4",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002377DC",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002377DE",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002377E4",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002377E6",
-  "note": "xbsymbol/fidb name"
- },
- {
   "start": "0x0023D036",
   "note": "xbsymbol/fidb name"
  },
@@ -1080,28 +844,12 @@
   "note": "data-table pointer into coverage gap"
  },
  {
-  "start": "0x0025002B",
-  "note": "data-table pointer into coverage gap"
- },
- {
   "start": "0x00250063",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00250073",
   "note": "data-table pointer into coverage gap"
  },
  {
   "start": "0x0026001D",
   "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00260025",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x00286DF8",
-  "note": "xbsymbol/fidb name"
  },
  {
   "start": "0x00290028",
@@ -1128,27 +876,11 @@
   "note": "data-table pointer into coverage gap"
  },
  {
-  "start": "0x00297325",
-  "note": "data-table pointer into coverage gap"
- },
- {
-  "start": "0x002A002D",
-  "note": "data-table pointer into coverage gap"
- },
- {
   "start": "0x002A8527",
   "note": "xbsymbol/fidb name"
  },
  {
   "start": "0x002A8546",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002AFAF4",
-  "note": "xbsymbol/fidb name"
- },
- {
-  "start": "0x002AFAF8",
   "note": "xbsymbol/fidb name"
  }
 ]
