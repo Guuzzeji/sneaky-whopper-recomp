@@ -366,6 +366,18 @@ static float reg_f(uint32_t method)
 static uint32_t s_sem_va;
 void nv2a_pb_set_semaphore_target(uint32_t guest_va) { s_sem_va = guest_va; }
 
+/* Or: the guest global holding XDK D3D's device pointer, resolved to
+ * *(device + 0x30) at the first release -- the device does not exist yet when
+ * a title's host code starts, and the first release is the first moment the
+ * semaphore is needed. */
+static uint32_t s_sem_dev_ptr_va;
+void nv2a_pb_set_semaphore_device_ptr(uint32_t device_ptr_va)
+{
+    s_sem_dev_ptr_va = device_ptr_va;
+}
+#define MEM32_EXEC(va) \
+    (*(volatile uint32_t *)((uint8_t *)xbox_GetMemoryOffset() + (va)))
+
 /* Unhandled methods, ranked. The interesting output is not that something was
  * skipped but which things dominate, because that is the order to implement
  * them in. */
@@ -3449,6 +3461,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
     /* BACK_END_WRITE_SEMAPHORE_RELEASE. The title's pointer already names the
      * semaphore word; SET_SEMAPHORE_OFFSET is not added (in X-Men Legends it
      * held 0xFF000000 at times, which put the write outside guest memory). */
+    if (subch == 0 && method == 0x1D70 && !s_sem_va && s_sem_dev_ptr_va) {
+        uint32_t dev = MEM32_EXEC(s_sem_dev_ptr_va);
+        if (dev) {
+            s_sem_va = MEM32_EXEC(dev + 0x30);
+            fprintf(stderr, "[D3D] GPU semaphore at 0x%08X (device 0x%08X)\n",
+                    s_sem_va, dev);
+        }
+    }
     if (subch == 0 && method == 0x1D70 && s_sem_va) {
         uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
         *(volatile uint32_t *)(mem + s_sem_va) = param;

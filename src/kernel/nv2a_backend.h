@@ -117,4 +117,9 @@ int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out);
  * the semaphore context DMA object through RAMIN. */
 void nv2a_pb_set_semaphore_target(uint32_t guest_va);
 
+/* Same, for a title whose device does not exist yet: the guest VA of the
+ * global holding XDK D3D's device pointer. The semaphore (device+0x30) is
+ * resolved at the first release. */
+void nv2a_pb_set_semaphore_device_ptr(uint32_t device_ptr_va);
+
 #endif /* NV2A_BACKEND_H */
