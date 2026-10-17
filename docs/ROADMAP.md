@@ -131,24 +131,36 @@ These are tracked in P5.4.
 
 ## P5 — Input, audio, video
 
-- [ ] Input: XInput controller plus keyboard and mouse. Menu navigation works.
+- [x] Input: an Xbox controller on the emulated USB bus, fed by XInput, plus the keyboard as a pad on port 0. Menu navigation works.
 - [ ] Audio:
-  - [ ] DirectSound/APU output.
-  - [ ] WMA music through the WMADEC section.
-  - [ ] Check that the Dolby section isn't needed, or is handled.
-- [ ] FMV: XMV movies play, through `tools/xmv` and Media Foundation.
+  - [x] DirectSound/APU output.
+  - [ ] WMA music through the WMADEC section. WMADEC serves the XDK's custom-soundtrack path (`TDATA\FFFE0000\MUSIC\*.WMA`); the game's own audio is in the `.xbp` packages and the movies. Compare the menus with xemu to see whether any music is missing.
+  - [x] Check that the Dolby section isn't needed, or is handled. Handled: the toolkit stubs the EP DSP and writes its heartbeat (P3).
+- [x] FMV: XMV movies play at full speed, with sound. They play through the game's own lifted XMV decoder, not through `tools/xmv` and Media Foundation.
 
 **Exit:** the menu is fully navigable with sound and the intro movies play.
+
+**Result (2026-10-17):** START skips the movies. The title screen, main menu, Help & Options and Audio Options all navigate with the pad, and UI sounds play on every press. Movies run at 29.97 fps with continuous audio. Rendering is on the host GPU (D3D11). What it took:
+
+- **The pad was never enumerated.** The toolkit's OHCI model starts only when the title calls `xbox_OhciInit()`, and `main.c` never did. `main.c` now calls it, with `RECOMP_USB` and `RECOMP_KEYBOARD` on by default (`=0` turns either off).
+- **Enumeration stopped after SET_CONFIGURATION.** The USB completion callback `0x2ABB39` was never lifted: it follows a `leave; ret 8` with no padding, like `0x2A7085` in P3. An ICALL failure in the log named it. A scan for uncovered code right after a `ret` found 25 such entries in XPP, all real code; they are now seeded in `seeds/p5_xpp.json`. The scan also found ~500 candidates in other sections, but those include data tables, so the ICALL feedback loop should handle them instead.
+- **Audio underran about 100 ms every second.** The APU frame clock waits one EP period (5.3 ms) at a time, and at the default 15.6 ms Windows timer tick each wait overslept threefold. `main.c` now calls `timeBeginPeriod(1)`. The APU then runs at exactly 48 kHz with no underruns.
+- **The Press START and menu videos stalled after one packet.** BlitzTech's heap takes 50 of the 64 MB contiguous arena, and every movie allocates two 1.2 MB surfaces and frees them at the end. Without `RECOMP_HEAP_RECLAIM` the toolkit never reuses freed contiguous memory, so by the fourth movie the decoder's allocation was refused (`[CONTIG] arena exhausted`). `main.c` now turns reclaim on by default. The old lead (the never-called thunk `0x12BA50`) was a dead end: nothing references it. Every movie plays through the blocking player `0x1394A0`, which calls XMV `GetNextFrame` (`0x27F0C2`) directly.
+- **Movies ran at half speed: 15 fps for 29.97 fps content.** That also explains the audio gaps: XMV feeds audio a packet at a time, and with the video at half speed half the audio was missing. (The XMV header's "duration" field is twice the real length; ffprobe's 29.97 fps and the audio length agree.) Two causes, both in the software GPU, which ran on one thread:
+  - Under `RECOMP_PB_EXEC` the toolkit printed a `[NV2A] DMA_PUT` line on every kickoff, which took 42% of the executor thread. Upstream: those lines now need `RECOMP_NV2A_TRACE`.
+  - The software rasteriser was the remaining limit. `src/d3d11_backend.c` now registers a D3D11 render back end: the executor still decodes and transforms, and the host GPU fills the triangles. With it, movies hold 30 flips/s and the executor thread mostly idles. `RECOMP_D3D11=0` brings back the software rasteriser.
+- **Diagnostics:** `RECOMP_SAMPLE_ALL=1` samples every thread and prints per-thread CPU time. The sampler now includes the running function (RIP). `RECOMP_D3D11_STATS=1` prints flips/s.
 
 ## P5.4 — Finish P4: full rendering
 
 Starts once P5 is complete, because input is what gets the game past "Press START" and into the menus. It finishes the rest of P4 so that rendering is complete.
 
-- [ ] Render the main menu correctly: textures, swizzle, blending and register combiners.
-- [ ] Compare frames with xemu. Use RenderDoc to inspect the host D3D11 output.
-- [ ] Get the Press START background video playing. It reads one packet and stalls; the wrapper's `GetNextFrame` thunk `0x12BA50` is never called.
-- [ ] Get movies to full speed. The intro plays at about 0.5×: GPU fence waits on the software PB executor take 44%, and the lifted MMX YUV→RGB copy (`sub_00280085`) takes 32%.
+- [ ] Render the main menu correctly: textures, swizzle, blending and register combiners. The menus now draw through the D3D11 back end, which applies texture stage 0 × diffuse with blend, alpha test, depth and stencil. Register combiners and stages 1–3 do not reach a back end yet (`nv2a_backend.h`). The whole image looks dark; check that against xemu.
+- [ ] Compare frames with xemu. Use RenderDoc to inspect the host D3D11 output; the back end's device is offscreen, so capture it with RenderDoc's process injection.
+- [x] Get the Press START background video playing. Fixed in P5 by contiguous-memory reclaim.
+- [x] Get movies to full speed. Fixed in P5 by the trace gate and the D3D11 back end. On the main thread, the lifted MMX YUV→RGB copy (`sub_00280085`) is now the largest cost.
 - [ ] Remove the faint box around the loading icon.
+- [ ] D3D11 back end follow-ups: culling (off for now), Z16 depth clears, partial colour-mask clears, and LRU eviction for more than 16 render targets. Presenting through a swapchain would remove the per-frame readback.
 
 **Exit:** every screen from boot through the main menu and its submenus renders and matches xemu visually, and movies play at full speed.
 

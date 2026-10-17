@@ -32,6 +32,8 @@
 
 #include <windows.h>
 #include <dbghelp.h>
+#include <mmsystem.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -288,11 +290,16 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 
 /* ── Sampling profiler (RECOMP_SAMPLE_SECS) ────────────────── */
 
-/* Where the main thread spends its time: suspended every 2 ms, its host stack
- * is copied and scanned for return addresses into the exe, and the innermost
- * two are counted as a pair. The watchdog says where a thread is stuck; this
- * says where a thread that is busy but getting nowhere goes -- a frame loop
- * that runs at full rate and never draws, for one.
+/* Where a thread spends its time: suspended every 2 ms, its RIP and host
+ * stack are copied and scanned for addresses inside the exe, and the
+ * innermost two are counted as a pair. The watchdog says where a thread is
+ * stuck; this says where a thread that is busy but getting nowhere goes -- a
+ * frame loop that runs at full rate and never draws, for one.
+ *
+ * The main thread by default. RECOMP_SAMPLE_ALL=1 samples every thread alive
+ * when sampling starts, each key prefixed with the thread's index: the main
+ * thread waiting in a fence says the GPU thread is the one to look at, and
+ * this is how to look at it.
  *
  * Release has no PDB, so it prints RVAs; tools/resolve_rva.py names them from
  * build/sneakking_recomp.map (/MAP in CMakeLists.txt).
@@ -300,73 +307,132 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
  * Only a copy is taken while the thread is suspended: it may hold a heap or
  * loader lock, and dbghelp (StackWalk64, SymFromAddr) deadlocked on one.
  *
- * ponytail: main thread only, a scan rather than an unwind (it over-reports
- * like the crash handler's), a linear table of keys. Enough to rank a frame
- * loop; per-thread sampling if a worker is the question. */
+ * ponytail: a scan rather than an unwind (it over-reports like the crash
+ * handler's), a linear table of keys, threads fixed at the start. Enough to
+ * rank a frame loop. */
 static HANDLE s_sample_thread;
 
 static DWORD WINAPI sampler_proc(LPVOID arg)
 {
-    enum { SLOTS = 512, WORDS = 2048 };
-    static char keys[SLOTS][48];
+    enum { SLOTS = 1024, WORDS = 2048, THREADS = 64 };
+    static char keys[SLOTS][56];
     static unsigned hits[SLOTS];
     static uint64_t stack[WORDS];
+    static HANDLE th[THREADS];
+    static unsigned th_total[THREADS];
+    static ULONGLONG cpu0[THREADS];
     DWORD end;
     uintptr_t lo = (uintptr_t)GetModuleHandleA(NULL);
     uintptr_t hi = lo + ((IMAGE_NT_HEADERS *)(lo +
                    ((IMAGE_DOS_HEADER *)lo)->e_lfanew))->OptionalHeader.SizeOfImage;
     unsigned total = 0;
-    int used = 0, i, k;
+    int used = 0, nth = 0, t, i, k;
 
     Sleep(getenv("RECOMP_SAMPLE_DELAY") ? atoi(getenv("RECOMP_SAMPLE_DELAY")) * 1000 : 2000); /* past the XBE load, or to a later scene */
+    th[nth++] = s_sample_thread;
+    if (getenv("RECOMP_SAMPLE_ALL")) {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        THREADENTRY32 te;
+        DWORD self = GetCurrentThreadId(), main_id = GetThreadId(s_sample_thread);
+        te.dwSize = sizeof(te);
+        for (BOOL ok = Thread32First(snap, &te); ok && nth < THREADS;
+             ok = Thread32Next(snap, &te)) {
+            if (te.th32OwnerProcessID != GetCurrentProcessId()
+                    || te.th32ThreadID == self || te.th32ThreadID == main_id)
+                continue;
+            th[nth] = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                                 FALSE, te.th32ThreadID);
+            if (th[nth])
+                nth++;
+        }
+        CloseHandle(snap);
+    }
+    for (t = 0; t < nth; t++) {
+        FILETIME c, e, k, u;
+        if (GetThreadTimes(th[t], &c, &e, &k, &u))
+            cpu0[t] = ((ULONGLONG)k.dwHighDateTime << 32 | k.dwLowDateTime)
+                    + ((ULONGLONG)u.dwHighDateTime << 32 | u.dwLowDateTime);
+    }
     end = GetTickCount() + (DWORD)(uintptr_t)arg * 1000;
     while ((LONG)(end - GetTickCount()) > 0) {
-        CONTEXT ctx;
-        MEMORY_BASIC_INFORMATION mbi;
-        char key[48] = "";
-        int n, found = 0;
-
         Sleep(2);
-        if (SuspendThread(s_sample_thread) == (DWORD)-1)
-            break;
-        ctx.ContextFlags = CONTEXT_CONTROL;
-        if (!GetThreadContext(s_sample_thread, &ctx)) {
-            ResumeThread(s_sample_thread);
-            continue;
-        }
-        VirtualQuery((void *)ctx.Rsp, &mbi, sizeof(mbi));
-        n = (int)(((uintptr_t)mbi.BaseAddress + mbi.RegionSize - ctx.Rsp) / 8);
-        if (n > WORDS) n = WORDS;
-        memcpy(stack, (void *)ctx.Rsp, (size_t)n * 8);
-        ResumeThread(s_sample_thread);
+        for (t = 0; t < nth; t++) {
+            CONTEXT ctx;
+            MEMORY_BASIC_INFORMATION mbi;
+            char key[56];
+            int n, found = 0;
 
-        for (k = 0; k < n && found < 2; k++) {
-            size_t l = strlen(key);
-            if (stack[k] < lo || stack[k] >= hi)
+            if (SuspendThread(th[t]) == (DWORD)-1)
                 continue;
-            snprintf(key + l, sizeof(key) - l, "%s%llX", l ? " < " : "",
-                     (unsigned long long)(stack[k] - lo));
-            found++;
+            ctx.ContextFlags = CONTEXT_CONTROL;
+            if (!GetThreadContext(th[t], &ctx)) {
+                ResumeThread(th[t]);
+                continue;
+            }
+            VirtualQuery((void *)ctx.Rsp, &mbi, sizeof(mbi));
+            n = (int)(((uintptr_t)mbi.BaseAddress + mbi.RegionSize - ctx.Rsp) / 8);
+            if (n > WORDS - 1) n = WORDS - 1;
+            stack[0] = ctx.Rip;      /* the function running now, then its callers */
+            memcpy(stack + 1, (void *)ctx.Rsp, (size_t)n * 8);
+            ResumeThread(th[t]);
+
+            snprintf(key, sizeof(key), "T%d ", t);
+            for (k = 0; k <= n && found < 2; k++) {
+                size_t l = strlen(key);
+                if (stack[k] < lo || stack[k] >= hi)
+                    continue;
+                snprintf(key + l, sizeof(key) - l, "%s%llX", found ? " < " : "",
+                         (unsigned long long)(stack[k] - lo));
+                found++;
+            }
+            for (i = 0; i < used && strcmp(keys[i], key); i++)
+                ;
+            if (i == used && used < SLOTS)
+                snprintf(keys[used++], sizeof(keys[0]), "%s", key);
+            if (i < used)
+                hits[i]++;
+            th_total[t]++;
+            total++;
         }
-        for (i = 0; i < used && strcmp(keys[i], key); i++)
-            ;
-        if (i == used && used < SLOTS)
-            snprintf(keys[used++], sizeof(keys[0]), "%s", key);
-        if (i < used)
-            hits[i]++;
-        total++;
     }
-    fprintf(stderr, "[SAMPLE] %u samples of the main thread:\n", total);
-    for (k = 0; k < 40; k++) {
+    fprintf(stderr, "[SAMPLE] %u samples of %d thread(s), %u per thread "
+            "(T0 is the main thread); %% of one thread's samples:\n",
+            total, nth, th_total[0]);
+    for (k = 0; k < 60; k++) {
         int best = -1;
         for (i = 0; i < used; i++)
             if (hits[i] && (best < 0 || hits[i] > hits[best]))
                 best = i;
         if (best < 0)
             break;
-        fprintf(stderr, "  %5.1f%%  %s\n", 100.0 * hits[best] / total,
+        fprintf(stderr, "  %5.1f%%  %s\n",
+                th_total[0] ? 100.0 * hits[best] / th_total[0] : 0.0,
                 keys[best]);
         hits[best] = 0;
+    }
+    /* CPU each thread burnt over the window, and where it started: the
+     * sample keys say where a thread is, this says whether it is working
+     * there or waiting. Start addresses are RVAs for resolve_rva.py. */
+    for (t = 0; t < nth; t++) {
+        typedef LONG (WINAPI *NtQIT)(HANDLE, int, PVOID, ULONG, PULONG);
+        static NtQIT qit;
+        FILETIME c, e, k, u;
+        ULONGLONG now = 0;
+        uintptr_t start = 0;
+        if (!qit)
+            qit = (NtQIT)GetProcAddress(GetModuleHandleA("ntdll.dll"),
+                                        "NtQueryInformationThread");
+        if (GetThreadTimes(th[t], &c, &e, &k, &u))
+            now = ((ULONGLONG)k.dwHighDateTime << 32 | k.dwLowDateTime)
+                + ((ULONGLONG)u.dwHighDateTime << 32 | u.dwLowDateTime);
+        if (qit)
+            qit(th[t], 9 /* ThreadQuerySetWin32StartAddress */, &start,
+                sizeof(start), NULL);
+        if (now - cpu0[t] < 1000000)        /* under 0.1 s: idle, skip */
+            continue;
+        fprintf(stderr, "  [CPU] T%d %5.1f%% of a core, start %llX\n", t,
+                (now - cpu0[t]) / 1e5 / (double)(uintptr_t)arg,
+                (unsigned long long)(start >= lo && start < hi ? start - lo : start));
     }
     fflush(stderr);
     return 0;
@@ -400,6 +466,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Unbuffered output for immediate visibility during debugging */
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    /* 1 ms timer resolution. The APU frame clock waits one EP period
+     * (5.3 ms) at a time; at the default 15.6 ms tick each wait overslept
+     * threefold, the APU made about 42.5k samples a second for a 48 kHz
+     * device, and XAudio2 ran dry about 100 ms in every second. */
+    timeBeginPeriod(1);
+
+    /* Freed memory has to come back. BlitzTech's heap takes 50 of the 64 MB
+     * contiguous arena at boot, and every movie allocates two 1.2 MB D3D
+     * surfaces through MmAllocateContiguousMemoryEx and frees them at the
+     * end. Without reclaim the toolkit keeps every freed block, so by the
+     * fourth movie the arena is full: the decoder's surface is refused and
+     * the Press START and menu videos (and the menu music in them) stall
+     * after one packet. RECOMP_HEAP_RECLAIM=0 turns it off. Set before
+     * anything allocates: the toolkit reads it once. */
+    if (!getenv("RECOMP_HEAP_RECLAIM"))
+        _putenv("RECOMP_HEAP_RECLAIM=1");
+    else if (strcmp(getenv("RECOMP_HEAP_RECLAIM"), "0") == 0)
+        _putenv("RECOMP_HEAP_RECLAIM=");
 
     printf("=== Sneak King - Static Recompilation ===\n");
     printf("Loading XBE...\n");
@@ -457,6 +542,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     else if (strcmp(getenv("RECOMP_VBLANK"), "0") == 0)
         _putenv("RECOMP_VBLANK=");
 
+    /* The controllers. XAPI is linked into the image and drives the MCPX
+     * OHCI registers itself, so the pad only exists if the toolkit's OHCI
+     * model is up -- and nothing in the toolkit brings it up but the title.
+     * The keyboard is a pad on port 0. Both default on; =0 turns either off.
+     * Must follow the memory layout: it protects the aperture to trap it. */
+    if (!getenv("RECOMP_USB"))
+        _putenv("RECOMP_USB=1");
+    else if (strcmp(getenv("RECOMP_USB"), "0") == 0)
+        _putenv("RECOMP_USB=");
+    if (!getenv("RECOMP_KEYBOARD"))
+        _putenv("RECOMP_KEYBOARD=1");
+    else if (strcmp(getenv("RECOMP_KEYBOARD"), "0") == 0)
+        _putenv("RECOMP_KEYBOARD=");
+    {
+        extern void xbox_OhciInit(void);
+        xbox_OhciInit();
+    }
+
     /* Step 3: Initialize Xbox kernel */
     printf("Initializing Xbox kernel replacement...\n");
     xbox_kernel_init();
@@ -478,6 +581,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     {
         extern void nv2a_pb_set_semaphore_device_ptr(uint32_t device_ptr_va);
         nv2a_pb_set_semaphore_device_ptr(0x0020D328);
+    }
+
+    /* Rasterise on the host GPU instead of the CPU (src/d3d11_backend.c).
+     * The executor still decodes and transforms; this fills the triangles.
+     * RECOMP_D3D11=0 keeps the software rasteriser. */
+    if (getenv("RECOMP_PB_EXEC")
+        && !(getenv("RECOMP_D3D11") && strcmp(getenv("RECOMP_D3D11"), "0") == 0)) {
+        extern int d3d11_backend_init(void);
+        d3d11_backend_init();
     }
 
     /* Step 6: Initialize stack */

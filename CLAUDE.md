@@ -22,6 +22,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 | `game/` | Extracted disc: 143 files, 1.55 GB, including `default.xbe` and `default_analysis.json`. |
 | `analysis/{disasm,func_id,abi}/` | Pipeline output (functions, xrefs, labels, strings, identified functions, ABI). |
 | `src/main.c`, `src/recomp_manual.c` | Host entry point and manual overrides. Made from the xboxrecomp `templates/new-game`. |
+| `src/d3d11_backend.c` | D3D11 render back end for the PB executor (P5): the host GPU fills the triangles. |
 | `src/recomp/gen/` | Generated lifted C (Phase 2 onward). |
 | `tools/p1_survey.py` | P1 survey (gaps, data pointers, vtables, jump tables, D3D usage, threads). Writes to `analysis/p1/`. |
 | `seeds/` | Seed lists for `tools.disasm --seed-functions`. They hold addresses only. |
@@ -65,7 +66,8 @@ Run these from `C:\repos\xboxrecomp`, with `$py` set to the venv Python, `$x` to
 ```powershell
 & $py -m tools.xiso unpack <iso> -o C:\repos\sneak-king-recomp\game
 & $py -m tools.xbe_parser $x --json C:\repos\sneak-king-recomp\game\default_analysis.json
-& $py -m tools.disasm $x -o $a\disasm                       # ~8 min, all executable sections
+& $py -m tools.disasm $x -o $a\disasm --force --seed-functions C:\repos\sneak-king-recomp\seeds\p1_static.json --seed-functions C:\repos\sneak-king-recomp\seeds\p3_runtime.json --seed-functions C:\repos\sneak-king-recomp\seeds\p5_xpp.json   # ~13 min
+& $py tools\ghidra_naming\merge_names.py --names-json $a\names_combined.json --functions-json $a\disasm\functions.json --apply   # after disasm, before recomp
 & $py -m tools.func_id $x --functions $a\disasm\functions.json --strings $a\disasm\strings.json --xrefs $a\disasm\xrefs.json -o $a\func_id
 & $py -m tools.abi_analysis $x --disasm-dir $a\disasm --func-id-dir $a\func_id --output-dir $a\abi
 & $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir C:\repos\sneak-king-recomp\src\recomp\gen --game-name "Sneak King" --exclude-manual C:\repos\sneak-king-recomp\src\recomp_manual.c
@@ -84,13 +86,24 @@ Run it with `RECOMP_AC97_READY=1`, `RECOMP_PB_EXEC=1` and `RECOMP_FB_WINDOW=1`:
 - Without the second, nothing writes the D3D fence semaphore.
 - Without the third, nothing is visible.
 
+`main.c` turns these on by default; set any of them to `0` to turn it off:
+- `RECOMP_VBLANK`: the XMV player times frames by vblank.
+- `RECOMP_USB` and `RECOMP_KEYBOARD`: the pad on the emulated OHCI bus, and the keyboard as a pad on port 0 (Enter is START, Z is A, X is B, arrows are the D-pad; the full map is in the toolkit's `src/input/README.md`).
+- `RECOMP_HEAP_RECLAIM`: reuse freed contiguous memory. Without it the movies run the arena dry.
+- `RECOMP_D3D11`: rasterise on the host GPU (`src/d3d11_backend.c`). `RECOMP_D3D11=0` uses the software rasteriser.
+
+`main.c` also calls `timeBeginPeriod(1)`. Without it the APU clock oversleeps and audio underruns.
+
 Other useful switches:
 - `RECOMP_WATCHDOG_SECS=N`: dumps the guest stack of the boot thread after N seconds.
 - `RECOMP_KERNEL_LOG_BUDGET=N`: logs the first N kernel calls (the default is 200).
-- `RECOMP_SAMPLE_SECS=N`: profiles the main thread. Resolve its output with `tools/resolve_rva.py`.
+- `RECOMP_SAMPLE_SECS=N`: profiles the main thread; `RECOMP_SAMPLE_DELAY=N` starts it later. `RECOMP_SAMPLE_ALL=1` samples every thread and prints each thread's CPU time and start address. Resolve the output with `tools/resolve_rva.py`.
 - `RECOMP_PEEK=0xVA,...`: reads guest dwords.
+- `RECOMP_PAD_LIVE=<file>`: each line appended to the file is a pad press (`start:200`, `down`, `a`, `b`). `RECOMP_PAD_SCRIPT=<ms>:<button>,...` is the same on a timeline. With `RECOMP_FB_DUMP=<prefix>` and `RECOMP_FB_WINDOW_DUMP_EVERY=<frames>`, this drives the menus with no one at the keyboard. START skips the movies.
+- `RECOMP_APU_TRACE=1`: per-voice audio stats once a second. `RECOMP_AUDIO_WAV=<path>` records the output.
+- `RECOMP_D3D11_STATS=1`: flips per second.
 
-The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth. `main.c` turns `RECOMP_VBLANK` on by default, because the XMV player needs it.
+The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame.
 
 ## Debug loop (P3+)
 - **Indirect calls:**

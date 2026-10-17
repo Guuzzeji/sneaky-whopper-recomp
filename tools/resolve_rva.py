@@ -30,6 +30,8 @@ def name(rva):
 for line in open(log, errors="replace"):
     m = re.match(r"\s+([0-9.]+%)\s+(.*)", line)
     if m:
-        frames = [name(int(x, 16)) for x in m[2].split(" < ")
+        # A thread prefix (RECOMP_SAMPLE_ALL) passes through: "T3 1A2B < 3C4D".
+        tid, rest = (m[2].split(" ", 1) + [""])[:2] if m[2].startswith("T") else ("", m[2])
+        frames = [name(int(x, 16)) for x in rest.split(" < ")
                   if re.fullmatch("[0-9A-F]+", x)]
-        print(f"{m[1]:>7}  " + " < ".join(frames))
+        print(f"{m[1]:>7}  {tid + ' ' if tid else ''}" + " < ".join(frames))
