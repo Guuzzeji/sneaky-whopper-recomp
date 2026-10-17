@@ -1963,6 +1963,7 @@ static void backend_flush(int textured)
     batch.count = s_bcount;
     batch.texture = NULL;
     batch.state = &rs;
+    batch.rc = s_gpu.rc_seen ? &s_gpu.rc : NULL;
     if (textured && s_gpu.texs[0].valid) {
         tex.offset = s_gpu.texs[0].offset;
         tex.width  = s_gpu.texs[0].width;
@@ -3094,6 +3095,21 @@ static void draw_primitive(void)
                 if (batch_is_ffp())
                     fprintf(stderr, "[FTRACE]     zclear %08X zeta %08X\n",
                             s_gpu.zstencil_clear, s_gpu.zeta_offset);
+            }
+            {
+                /* Diffuse of v0 and the stencil state: a full-screen pass
+                 * that darkens everything is often meant to be confined by
+                 * stencil, or carries its strength in this alpha. */
+                float c[4] = {0};
+                fetch_attr(color_attr(), s_gpu.idx[0], c);
+                fprintf(stderr, "[FTRACE]     diffuse %g %g %g %g (attr off %08X stride %u)"
+                        " | stencil en %u func %X ref %X mask %X/%X op %X/%X/%X\n",
+                        c[0], c[1], c[2], c[3], color_attr()->offset,
+                        color_attr()->stride, s_reg[0x032C / 4],
+                        s_reg[0x0364 / 4], s_reg[0x0368 / 4],
+                        s_reg[0x036C / 4], s_reg[0x0360 / 4],
+                        s_reg[0x0370 / 4], s_reg[0x0374 / 4],
+                        s_reg[0x0378 / 4]);
             }
             if (s_gpu.rc_seen) {
                 int st;

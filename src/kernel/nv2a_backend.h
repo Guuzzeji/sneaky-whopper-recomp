@@ -20,14 +20,20 @@
  * so a back end only ever sees surface pixels. Blend, depth, alpha, cull and
  * stencil state arrive in Nv2aRenderState.
  *
- * ponytail: register-combiner state and texture stages 1-3 are not passed on:
- * a back end sees stage 0 and the diffuse colour. Extend Nv2aBatch when that
- * matters rather than adding callbacks.
+ * The register-combiner program arrives in Nv2aBatch.rc once the title has
+ * programmed one. It decides every pixel: D3D's MODULATE2X, for one, is a
+ * combiner output scale, and a back end that draws texel * diffuse instead
+ * shows such a title at half brightness.
+ *
+ * ponytail: texture stages 1-3, the specular colour and fog are not passed
+ * on: a back end sees stage 0 and the diffuse colour. Extend Nv2aBatch when
+ * that matters rather than adding callbacks.
  */
 #ifndef NV2A_BACKEND_H
 #define NV2A_BACKEND_H
 
 #include <stdint.h>
+#include "nv2a_combiner.h"
 
 /* The colour surface being drawn into, in real (anti-aliased) pixels.
  * aa_sx/aa_sy give the anti-aliasing factor, so width/aa_sx is the logical
@@ -96,6 +102,9 @@ typedef struct {
     uint32_t           count;
     const Nv2aTexture *texture;     /* NULL: untextured */
     const Nv2aRenderState *state;
+    /* The combiner program (nv2a_rc_eval is the reference), or NULL before
+     * the title has programmed one: then texel * diffuse. */
+    const Nv2aCombiner *rc;
 } Nv2aBatch;
 
 typedef struct {
