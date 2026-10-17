@@ -34,6 +34,23 @@
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 
 static volatile LONG s_fb_running;
+static HWND volatile s_fb_hwnd;
+
+/* A render back end that presents into this window itself (a D3D11 swap
+ * chain, at a higher resolution than guest memory holds) takes the window
+ * here and turns the GDI blit off; keys, the title bar and the dumps stay. */
+static volatile LONG s_fb_external;
+
+void *xbox_FramebufferWindowHwnd(void)
+{
+    return s_fb_hwnd;
+}
+
+void xbox_FramebufferWindowExternalPresent(int on)
+{
+    InterlockedExchange(&s_fb_external, on ? 1 : 0);
+}
+
 static uint32_t      s_fb_va, s_fb_pitch, s_fb_width = 640, s_fb_height = 480;
 static uint32_t     *s_rgb;           /* converted 32-bit copy for GDI */
 
@@ -298,6 +315,7 @@ static DWORD WINAPI fb_thread(LPVOID unused)
         return 0;
     }
     hdc = GetDC(hwnd);
+    s_fb_hwnd = hwnd;
 
     memset(&bi, 0, sizeof(bi));
     bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
@@ -326,18 +344,20 @@ static DWORD WINAPI fb_thread(LPVOID unused)
             if (s_present[idx])
                 memcpy(s_rgb, s_present[idx],
                        (size_t)s_fb_width * s_fb_height * 4);
-            StretchDIBits(hdc, 0, 0, (int)s_fb_width, (int)s_fb_height,
-                          0, 0, (int)s_fb_width, (int)s_fb_height,
-                          s_rgb, &bi, DIB_RGB_COLORS, SRCCOPY);
+            if (!s_fb_external)
+                StretchDIBits(hdc, 0, 0, (int)s_fb_width, (int)s_fb_height,
+                              0, 0, (int)s_fb_width, (int)s_fb_height,
+                              s_rgb, &bi, DIB_RGB_COLORS, SRCCOPY);
         } else if (s_fb_va && s_fb_pitch && s_rgb) {
             /* No flip yet, or pinned with RECOMP_FB_VA: read guest memory as
              * before, which is also what a title that never flips needs. */
             const uint8_t *src =
                 (const uint8_t *)((uintptr_t)s_fb_va + xbox_GetMemoryOffset());
             fb_convert(src, s_fb_pitch / s_fb_width);
-            StretchDIBits(hdc, 0, 0, (int)s_fb_width, (int)s_fb_height,
-                          0, 0, (int)s_fb_width, (int)s_fb_height,
-                          s_rgb, &bi, DIB_RGB_COLORS, SRCCOPY);
+            if (!s_fb_external)
+                StretchDIBits(hdc, 0, 0, (int)s_fb_width, (int)s_fb_height,
+                              0, 0, (int)s_fb_width, (int)s_fb_height,
+                              s_rgb, &bi, DIB_RGB_COLORS, SRCCOPY);
         }
         {
             /* One dump a few seconds in, so the title has had time to render
@@ -380,6 +400,7 @@ static DWORD WINAPI fb_thread(LPVOID unused)
         Sleep(16);
     }
 
+    s_fb_hwnd = NULL;
     ReleaseDC(hwnd, hdc);
     DestroyWindow(hwnd);
     free(s_rgb);

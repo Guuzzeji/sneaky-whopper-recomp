@@ -67,6 +67,12 @@ int  xbox_FramebufferDumpBmp(const char *path);
  * UTF-16 title (40 chars max); the stats come from each flip. */
 void xbox_FramebufferWindowSetTitle(const uint16_t *name, int max_chars);
 void xbox_FramebufferWindowFrameStats(uint32_t draws);
+#if defined(_WIN32)
+/* For a render back end that presents into the window itself: the HWND
+ * (NULL until the window is open), and turning the GDI blit off. */
+void *xbox_FramebufferWindowHwnd(void);
+void xbox_FramebufferWindowExternalPresent(int on);
+#endif
 
 #if !defined(_WIN32)
 /* POSIX hosts: the framebuffer window needs the process main thread (AppKit

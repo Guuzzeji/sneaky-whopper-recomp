@@ -13,12 +13,21 @@
  *
  *   RECOMP_MKB=0|1        master switch            (default off, opt-in)
  *   RECOMP_MKB_SENS=f     mouse sensitivity        (default 1.0)
- *   RECOMP_MKB_FULL=n     mouse counts for a full  (default 8)
- *                         stick throw, per poll
+ *   RECOMP_MKB_FULL=n     mouse counts in 1/60 s   (default 8)
+ *                         for a full stick throw
  *   RECOMP_MKB_DZ=f       assumed game deadzone    (default 0.18)
  *   RECOMP_MKB_ACC=f      aim acceleration         (default 1.0 = off)
  *   RECOMP_MKB_INVERT_Y=1 invert vertical aim      (default off)
  *   RECOMP_MKB_INI=path   config file (same keys, one per line)
+ *
+ * The ini also rebinds any pad control: bind.<TARGET>=<INPUT>,<INPUT>
+ * (no spaces). TARGET is A B X Y BLACK WHITE LT RT DPAD_UP DPAD_DOWN
+ * DPAD_LEFT DPAD_RIGHT START BACK LS RS MOVE_UP MOVE_DOWN MOVE_LEFT
+ * MOVE_RIGHT. INPUT is a letter or digit, SPACE ENTER ESCAPE TAB BACKSPACE
+ * SHIFT CTRL ALT UP DOWN LEFT RIGHT, MOUSE1..MOUSE5 (left, right, middle,
+ * X1, X2), WHEELUP, WHEELDOWN, a virtual-key number (0x..), or NONE.
+ * The defaults are an FPS layout: WASD move, mouse aims the right stick,
+ * MOUSE1 RT, MOUSE2 LT, SPACE A, E B, R X, MOUSE3/wheel Y.
  *
  * F9 toggles mouse/keyboard capture at runtime. Capture is only
  * applied while the recompiled game's process has the foreground
