@@ -60,6 +60,23 @@ int mkb_enabled(void);
  */
 int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState);
 
+/*
+ * Take the raw mouse counts since the last call (Windows convention: +x
+ * right, +y down) for a title that turns its camera with them directly.
+ * The first call stops the mouse from driving the aim stick. Returns 0,
+ * with zero deltas, while the mouse is released (F9) or the game is not
+ * in the foreground.
+ */
+int mkb_take_mouse_delta(long *dx, long *dy);
+
+/* A host overlay that wants the mouse and keyboard: while suspended the
+ * virtual pad is at rest and the pointer is free. */
+void mkb_set_suspended(int on);
+
+/* Show the pointer (and stop confining it) while the title is in a menu
+ * that the host lets the mouse point at; keys and buttons still merge. */
+void mkb_set_menu_cursor(int on);
+
 #ifdef __cplusplus
 }
 #endif

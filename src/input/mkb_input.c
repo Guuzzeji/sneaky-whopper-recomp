@@ -225,6 +225,9 @@ static volatile LONG s_mouse_click;  /* went down since the last poll */
 static volatile unsigned char s_vk_down[256];
 
 static volatile LONG s_active = 1;   /* F9 toggles this               */
+static volatile LONG s_direct;       /* the title takes the mouse deltas itself */
+static volatile LONG s_suspended;    /* a host overlay owns mouse and keys */
+static volatile LONG s_menu_cursor;  /* show the pointer for a menu       */
 static volatile LONG s_thread_up;
 
 /* F9 is read on the input thread, so the toggle works even while the
@@ -474,7 +477,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     if (!s_thread_up)
         return 0;
 
-    if (!s_active) {
+    if (!s_active || s_suspended) {
         mkb_manage_cursor(0);
         return 0;
     }
@@ -488,7 +491,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
         held_x = held_y = 0;
         return 0;
     }
-    mkb_manage_cursor(1);
+    mkb_manage_cursor(!s_menu_cursor);
 
     now = GetTickCount();
     btn = s_mouse_btn | InterlockedExchange(&s_mouse_click, 0);
@@ -526,7 +529,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     }
 
     /* ---- mouse: aim. `full` counts in 1/60 s is full throw ---- */
-    if (now - aim_t0 >= AIM_MS) {
+    if (!s_direct && now - aim_t0 >= AIM_MS) {
         LONG dx = InterlockedExchange(&s_dx, 0);
         LONG dy = InterlockedExchange(&s_dy, 0);
         double per = (double)s_cfg.full * (aim_t0 && now - aim_t0 < 200
@@ -578,3 +581,19 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
         pState->dwPacketNumber = ++packet;
     return any;
 }
+
+int mkb_take_mouse_delta(long *dx, long *dy)
+{
+    s_direct = 1;
+    *dx = InterlockedExchange(&s_dx, 0);
+    *dy = InterlockedExchange(&s_dy, 0);
+    if (!mkb_enabled() || !s_thread_up || !s_active || s_suspended
+            || !game_is_foreground()) {
+        *dx = *dy = 0;
+        return 0;
+    }
+    return 1;
+}
+
+void mkb_set_suspended(int on)   { InterlockedExchange(&s_suspended, on != 0); }
+void mkb_set_menu_cursor(int on) { InterlockedExchange(&s_menu_cursor, on != 0); }

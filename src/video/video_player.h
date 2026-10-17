@@ -72,6 +72,10 @@ void xbox_FramebufferWindowFrameStats(uint32_t draws);
  * (NULL until the window is open), and turning the GDI blit off. */
 void *xbox_FramebufferWindowHwnd(void);
 void xbox_FramebufferWindowExternalPresent(int on);
+/* A host overlay sees each window message first, on the window's thread;
+ * a nonzero return swallows it. WM_CLOSE and WM_DESTROY always go through. */
+typedef int (*xbox_fb_msg_hook_t)(void *hwnd, unsigned msg, uintptr_t wp, intptr_t lp);
+void xbox_FramebufferWindowSetMsgHook(xbox_fb_msg_hook_t fn);
 #endif
 
 #if !defined(_WIN32)

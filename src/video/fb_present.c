@@ -30,6 +30,7 @@
  * is the thing that receives the keys, so that is what has to remember
  * them. */
 #include "keyboard.h"   /* src/input */
+#include "video_player.h"
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 
@@ -49,6 +50,15 @@ void *xbox_FramebufferWindowHwnd(void)
 void xbox_FramebufferWindowExternalPresent(int on)
 {
     InterlockedExchange(&s_fb_external, on ? 1 : 0);
+}
+
+/* A host overlay (a debug UI) sees each window message first, on the
+ * window's thread; a nonzero return swallows it. */
+static xbox_fb_msg_hook_t volatile s_fb_msg_hook;
+
+void xbox_FramebufferWindowSetMsgHook(xbox_fb_msg_hook_t fn)
+{
+    s_fb_msg_hook = fn;
 }
 
 static uint32_t      s_fb_va, s_fb_pitch, s_fb_width = 640, s_fb_height = 480;
@@ -164,6 +174,9 @@ void xbox_FramebufferWindowFrameStats(uint32_t draws)
 
 static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
+    xbox_fb_msg_hook_t hook = s_fb_msg_hook;
+    if (hook && m != WM_CLOSE && m != WM_DESTROY && hook(h, m, w, l))
+        return 0;
     switch (m) {
     case WM_CLOSE:
     case WM_DESTROY:
