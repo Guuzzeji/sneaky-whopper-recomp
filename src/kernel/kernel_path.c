@@ -346,6 +346,31 @@ int xbox_path_tree(const char *xbox_path)
     return XBOX_TREE_UNKNOWN;
 }
 
+/* 1 when a guest path lands on the DVD (D:, \Device\CdRom0).
+ *
+ * The DVD is read-only, and titles test for that: Sneak King opens
+ * d:\_T_E_S_T.___ for writing at startup and, when the open succeeds, takes
+ * itself to be running from a writable dev drive and turns its DVD file cache
+ * off. The host directory behind D: is writable, so the bridge has to refuse
+ * the write itself. */
+int xbox_path_is_dvd(const char *xbox_path)
+{
+    char linked[2][512];
+    const char *p = xbox_path;
+    int hop;
+
+    if (!p)
+        return 0;
+    for (hop = 0; hop < 8; hop++) {
+        if (!resolve_symlink(p, linked[hop & 1], sizeof linked[0]))
+            break;
+        p = linked[hop & 1];
+    }
+    if (match_prefix(p, "\\??\\"))
+        p += 4;
+    return match_prefix(p, "\\Device\\CdRom0\\") != 0;
+}
+
 #if defined(_WIN32)
 /* ======================================================================== */
 

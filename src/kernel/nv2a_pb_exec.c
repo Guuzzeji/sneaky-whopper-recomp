@@ -1649,11 +1649,12 @@ static uint32_t vertex_color(uint32_t index)
  * coordinate, no specular, no point sprites. */
 
 /* Is this batch transformed by the fixed-function unit? Inline-array batches
- * are left to the screen-space path, as they were before. */
+ * are too: the hardware transforms whatever reaches attribute 0. Sneak King
+ * draws its loading screen as INLINE_ARRAY quads in object space (+-270,
+ * +-202); left to the screen-space path, they filled the top-left corner. */
 static int batch_is_ffp(void)
 {
-    return s_gpu.composite_set && (s_gpu.xf_mode & 3) != 2
-        && !s_gpu.inline_active;
+    return s_gpu.composite_set && (s_gpu.xf_mode & 3) != 2;
 }
 
 /* Fixed-function vertex lighting (SET_LIGHTING_ENABLE).
@@ -1770,28 +1771,36 @@ static int lit_color(uint32_t index, float out[4])
 static int ffp_vertex(uint32_t index, Nv2aVshOutput *out)
 {
     const float *m = s_gpu.composite, *off = nv2a_vsh_constant(59);
-    float in[4], clip[4], c[4], w;
+    float in[4], c[4];
+    /* Double, not float: Sneak King draws its movies at the far plane with
+     * z = 500000 and M[10] = 16777718, so clip z is about 8e12, where a
+     * float's step is a million. The depth that comes out has to land on
+     * the right side of the 24-bit clear value, 1/3 of a unit away. */
+    double clip[4], w;
     uint32_t st;
     int i;
 
     if (!fetch_attr(&s_gpu.attr[0], index, in))
         return 0;
     for (i = 0; i < 4; i++)
-        clip[i] = m[4 * i] * in[0] + m[4 * i + 1] * in[1]
-                + m[4 * i + 2] * in[2] + m[4 * i + 3] * in[3];
+        clip[i] = (double)m[4 * i] * in[0] + (double)m[4 * i + 1] * in[1]
+                + (double)m[4 * i + 2] * in[2] + (double)m[4 * i + 3] * in[3];
     /* A vertex behind the camera (w < 0) is kept: the clipper cuts it at the
      * near plane, and rejecting it dropped every batch that reached behind
      * the eye -- X-Men Legends' street and sidewalk meshes, which extend past
      * a top-down camera. Only w = 0 has no image. */
     w = clip[3];
-    if (fabsf(w) <= 1e-6f)
+    if (fabs(w) <= 1e-6)
         return 0;
 
     memset(out, 0, sizeof *out);
-    out->pos[0] = (clip[0] / w + off[0]) * s_gpu.aa_sx;
-    out->pos[1] = (clip[1] / w + off[1]) * s_gpu.aa_sy;
-    out->pos[2] = clip[2] / w + off[2];
-    out->pos[3] = w;
+    out->pos[0] = (float)((clip[0] / w + off[0]) * s_gpu.aa_sx);
+    out->pos[1] = (float)((clip[1] / w + off[1]) * s_gpu.aa_sy);
+    /* Truncated to the integer the depth buffer holds. Rounded to the
+     * nearest float instead, 16777214.67 became 16777215 -- equal to the
+     * Z24 clear value, so a LESS test failed the whole quad. */
+    out->pos[2] = (float)floor(clip[2] / w + off[2]);
+    out->pos[3] = (float)w;
 
     if (!lit_color(index, c) && !fetch_attr(color_attr(), index, c))
         c[0] = c[1] = c[2] = c[3] = 1.0f;
@@ -2315,7 +2324,10 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
                 continue;
             /* w1 is opposite a, w2 opposite b, w0 opposite c. */
             l0 = w1 * T->inv_area; l1 = w2 * T->inv_area; l2 = w0 * T->inv_area;
-            z = l0 * a[2] + l1 * b[2] + l2 * c[2];
+            /* Delta form: exact when the three depths are equal. The weighted
+             * sum is not -- its rounding, at depths near 2^24, flipped every
+             * other pixel of a far-plane quad against the clear value. */
+            z = a[2] + l1 * (b[2] - a[2]) + l2 * (c[2] - a[2]);
             {
                 float *zp = T->zb ? &T->zb[(size_t)y * NV_ZBUF_W + x] : NULL;
                 int shade = (s_gpu.color_mask & 0x01010101u) || s_gpu.alpha_test;
@@ -3059,6 +3071,26 @@ static void draw_primitive(void)
                         s_xf[0].pos[0], s_xf[0].pos[1], s_xf[0].pos[2],
                         s_xf[0].pos[3], s_xf[1].pos[0], s_xf[1].pos[1],
                         s_xf[2].pos[0], s_xf[2].pos[1], 10);
+            else {
+                /* The raw position and first texture coordinate of each of
+                 * the first four vertices: a fixed-function batch that lands
+                 * in the wrong place is wrong here or in the matrix. */
+                uint32_t k;
+                for (k = 0; k < s_gpu.idx_count && k < 4; k++) {
+                    float p[4], t[4];
+                    fetch_attr(&s_gpu.attr[0], s_gpu.idx[k], p);
+                    fetch_attr(texcoord_attr(), s_gpu.idx[k], t);
+                    fprintf(stderr, "[FTRACE]     v%u pos %g %g %g %g  uv %g %g",
+                            k, p[0], p[1], p[2], p[3], t[0], t[1]);
+                    if (batch_is_ffp() && s_xf)
+                        fprintf(stderr, "  -> %g %g %.9g w %g", s_xf[k].pos[0],
+                                s_xf[k].pos[1], s_xf[k].pos[2], s_xf[k].pos[3]);
+                    fputc(10, stderr);
+                }
+                if (batch_is_ffp())
+                    fprintf(stderr, "[FTRACE]     zclear %08X zeta %08X\n",
+                            s_gpu.zstencil_clear, s_gpu.zeta_offset);
+            }
             if (s_gpu.rc_seen) {
                 int st;
                 fprintf(stderr, "[FTRACE]     rc stages %u ctl %08X prog %05X fin %08X %08X",

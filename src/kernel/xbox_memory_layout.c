@@ -1341,6 +1341,16 @@ static void framebuffer_probe_tick(void)
     fflush(stderr);
 }
 
+/* QPC deadline before which the interrupt status words a vblank raised are
+ * left alone. The kernel's vblank sets PMC_INTR_0/PCRTC_INTR_0 and calls
+ * D3D's ISR, which defers to a DPC; the DPC counts the vblank only if it
+ * still sees PMC_INTR_0 bit 24. This loop zeroes those words continuously,
+ * and cleared them between the ISR and the DPC on a third to half of all
+ * vblanks -- D3D's VBlankCount ran at 25-45 Hz and the XMV player, which
+ * times frames by it, fell behind its audio. The DPC acknowledges and then
+ * spins until the bit clears, so the hold is short and expires on its own. */
+volatile LONGLONG g_nv2a_irq_hold_until;
+
 /* Clear the request bits "hardware" would clear on its own.
  *
  * Also called by the pushbuffer walker between commands. This thread executes
@@ -1353,12 +1363,21 @@ static void framebuffer_probe_tick(void)
 void xbox_Nv2aAckBusyBits(void)
 {
     volatile uint32_t *regs = (volatile uint32_t *)g_nv2a_memory;
+    int hold = 0;
 
     if (!regs)
         return;
+    if (g_nv2a_irq_hold_until) {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        hold = now.QuadPart < g_nv2a_irq_hold_until;
+    }
     for (size_t i = 0; i < sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]); i++) {
         volatile uint32_t *r =
             (volatile uint32_t *)((char *)regs + NV2A_ACK[i].offset);
+        if (hold && (NV2A_ACK[i].offset == 0x000100 ||
+                     NV2A_ACK[i].offset == 0x600100))
+            continue;
         if (*r & NV2A_ACK[i].busy_mask) {
             *r &= ~NV2A_ACK[i].busy_mask;
         }

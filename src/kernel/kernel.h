@@ -585,6 +585,9 @@ enum {
 };
 int xbox_path_tree(const char *xbox_path);
 
+/* 1 when a guest path is on the read-only DVD (kernel_path.c). */
+int xbox_path_is_dvd(const char *xbox_path);
+
 /* 1 when the directory holding host_path exists (kernel_file.c, per backend). */
 int xbox_host_parent_exists(const xbox_host_char *host_path);
 

@@ -2703,26 +2703,70 @@ uint32_t xbox_VblankCount(void)
     return (uint32_t)g_vblank_total;
 }
 
+static void kernel_vblank_one(void);
+static void kernel_drain_dpcs(void);
+
+/* Every vblank that is due, on a high-resolution schedule.
+ *
+ * This was "one tick, then none for 16 ms" read off GetTickCount64 from a
+ * thread that sleeps 10 ms. Both run on the 15.6 ms system timer, so the
+ * second tick usually landed two timer periods later: ~32 Hz, not 60. A title
+ * that only counts vblanks never noticed; the XMV player did. It presents a
+ * frame when the vblank count reaches the frame's time plus an offset that it
+ * takes from the wall clock (rdtsc) each time an audio packet completes. With
+ * the vblank clock at half speed, video fell behind audio, the next movie
+ * packet (and its audio) was read only once the video had caught up, audio
+ * starved, and the offset grew each time: packet reads came 1.5x further
+ * apart every time and KingGamesIdent.xmv stalled within a few seconds. */
 static void kernel_vblank_tick(void)
 {
     static int enabled = -1;
-    static long long next_ms;
-    long long now;
+    static LARGE_INTEGER freq;
+    static long long next_due;
+    LARGE_INTEGER now;
+    long long period;
+    int n = 0;
 
-    if (enabled < 0)
+    if (enabled < 0) {
         enabled = getenv("RECOMP_VBLANK") != NULL;
+        QueryPerformanceFrequency(&freq);
+    }
     if (!enabled)
         return;
 
-    now = (long long)GetTickCount64();
-    if (now < next_ms)
-        return;
-    next_ms = now + 16;                       /* ~60 Hz */
+    QueryPerformanceCounter(&now);
+    period = freq.QuadPart / 60;              /* 60 Hz */
+    /* First call, or a stall of more than a few frames: start over from now
+     * rather than raising a burst of ISRs to catch up. */
+    if (next_due == 0 || now.QuadPart - next_due > 4 * period)
+        next_due = now.QuadPart;
+    while (now.QuadPart >= next_due && n++ < 4) {
+        next_due += period;
+        kernel_vblank_one();
+        /* The ISR leaves the count to its DPC, and a DPC still queued
+         * is not queued twice: run it before the next vblank, or two
+         * vblanks in one wake count as one. */
+        kernel_drain_dpcs();
+    }
+}
+
+static void kernel_vblank_one(void)
+{
     InterlockedIncrement(&g_vblank_total);
 
     if (!xbox_GetConnectedInterrupt(NV2A_VECTOR))
         return;
 
+    {
+        /* Keep the status bits up until the DPC has read them; see
+         * g_nv2a_irq_hold_until. Half a millisecond covers the ISR and
+         * the DPC's first read many times over. */
+        extern volatile LONGLONG g_nv2a_irq_hold_until;
+        LARGE_INTEGER now, f;
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&f);
+        g_nv2a_irq_hold_until = now.QuadPart + f.QuadPart / 2000;
+    }
     BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PCRTC_INTR_0) |= NV2A_PCRTC_INTR_VBLANK;
     BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
 
@@ -3449,6 +3493,16 @@ static NTSTATUS bridge_create_file_open(
         return 0;
     }
 
+    /* The DVD is read-only: refuse write access and any disposition that
+     * creates or truncates. See xbox_path_is_dvd. */
+    if (xbox_path_is_dvd(name.Buffer) &&
+        ((access & (0x40000000u /* GENERIC_WRITE */ | 0x10000000u /* GENERIC_ALL */ |
+                    0x2u /* FILE_WRITE_DATA */ | 0x4u /* FILE_APPEND_DATA */)) ||
+         (disposition != 1 /* FILE_OPEN */ && disposition != 3 /* FILE_OPEN_IF */))) {
+        bridge_write_iostatus(iostatus_va, STATUS_ACCESS_DENIED, 0);
+        return STATUS_ACCESS_DENIED;
+    }
+
     memset(&ios, 0, sizeof(ios));
 
     st = xbox_NtCreateFile(&h, access, &oa, &ios, NULL,
@@ -3693,6 +3747,10 @@ static void bridge_NtOpenFile(void)
  */
 recomp_func_t recomp_lookup_kernel(uint32_t xbox_va);
 
+/* A guest APC carried by a host one; see NtQueueApcThread. */
+struct guest_apc { uint32_t routine, a1, a2, a3; };
+static void CALLBACK bridge_guest_apc(ULONG_PTR p);
+
 static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
                             uint32_t iostatus)
 {
@@ -3732,6 +3790,24 @@ static void bridge_complete_file_io(uint32_t event_token, uint32_t apc_routine,
         if (ev) SetEvent(ev);
     }
     if (apc_routine) {
+        /* Queued to this thread's next alertable wait, as the console does.
+         * Run inline, the completion beat its own issuer: Sneak King's loader
+         * APC (0x76730) calls ReadFileEx, *then* marks the read in flight
+         * (0x2F2FB8 = 1); the completion (0x74080) had already cleared it, so
+         * the flag stuck and no second package was ever read.
+         * RECOMP_IO_APC_INLINE=1 restores the inline delivery. */
+        static int inline_apc = -1;
+        struct guest_apc *a;
+        if (inline_apc < 0)
+            inline_apc = getenv("RECOMP_IO_APC_INLINE") != NULL;
+        a = inline_apc ? NULL : malloc(sizeof *a);
+        if (a) {
+            a->routine = apc_routine; a->a1 = apc_context;
+            a->a2 = iostatus; a->a3 = 0;
+            if (QueueUserAPC(bridge_guest_apc, GetCurrentThread(), (ULONG_PTR)a))
+                return;
+            free(a);
+        }
         deliver_one_apc(apc_routine, apc_context, iostatus);
     }
 }
@@ -8177,14 +8253,79 @@ static void bridge_NtProtectVirtualMemory(void)
     }
 }
 
-/* --- NtQueueApcThread (ordinal 206, 5 args = 20 bytes) --- */
+/* --- NtQueueApcThread (ordinal 206, 5 args = 20 bytes) ---
+ * NTSTATUS NtQueueApcThread(HANDLE Thread, PPS_APC_ROUTINE ApcRoutine,
+ *                           PVOID Arg1, PVOID Arg2, PVOID Arg3);
+ *
+ * XAPI's QueueUserAPC. A stub here dropped the APC, and a title whose I/O
+ * thread only ever sleeps alertably and takes its work as APCs never did any:
+ * Sneak King queues every package read to its loader thread this way
+ * (0x776C0 -> QueueUserAPC(0x76730, ...)), so it opened w_gameboot_fetm.xbp,
+ * took its size and waited for a load that was never started.
+ *
+ * The guest thread token resolves to its host thread, so a host APC carries
+ * the guest one: it runs on that thread at its next alertable host wait --
+ * every guest alertable wait is one -- which is where the console delivers a
+ * user APC too. The thread is inside a kernel call then, so its registers are
+ * saved round the guest routine, as for any callback a bridge runs. */
+static int guest_cpu_enabled(void);          /* the guest CPU lock, below */
+static CRITICAL_SECTION g_guest_cpu;
+static RECOMP_TLS int t_guest_held;
+
+static void CALLBACK bridge_guest_apc(ULONG_PTR p)
+{
+    struct guest_apc a = *(struct guest_apc *)p;
+    uint32_t sv[7] = { g_eax, g_ecx, g_edx, g_ebx, g_esi, g_edi, g_esp };
+    int took = 0;
+    recomp_func_t fn;
+
+    free((void *)p);
+    fn = recomp_lookup(a.routine);
+    if (!fn) fn = recomp_lookup_manual(a.routine);
+    if (!fn) fn = recomp_lookup_kernel(a.routine);   /* NtUserIoApcDispatcher */
+    if (!fn) {
+        fprintf(stderr, "  [KERNEL] NtQueueApcThread: APC routine 0x%08X not"
+                " in dispatch\n", a.routine);
+        fflush(stderr);
+        return;
+    }
+    if (guest_cpu_enabled() && !t_guest_held) {
+        EnterCriticalSection(&g_guest_cpu);
+        t_guest_held = took = 1;
+    }
+    /* VOID NTAPI ApcRoutine(Arg1, Arg2, Arg3): stdcall, the callee pops. */
+    g_esp -= 4; BRIDGE_MEM32(g_esp) = a.a3;
+    g_esp -= 4; BRIDGE_MEM32(g_esp) = a.a2;
+    g_esp -= 4; BRIDGE_MEM32(g_esp) = a.a1;
+    g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;   /* dummy return address */
+    fn();
+    if (took && t_guest_held) {   /* a kernel call in the APC may have let go */
+        t_guest_held = 0;
+        LeaveCriticalSection(&g_guest_cpu);
+    }
+    g_eax = sv[0]; g_ecx = sv[1]; g_edx = sv[2];
+    g_ebx = sv[3]; g_esi = sv[4]; g_edi = sv[5]; g_esp = sv[6];
+}
+
 static void bridge_NtQueueApcThread(void)
 {
-    (void)STACK_ARG(0);
-    (void)STACK_ARG(1);
-    (void)STACK_ARG(2);
-    (void)STACK_ARG(3);
-    (void)STACK_ARG(4);
+    HANDLE th = bridge_resolve_handle(STACK_ARG(0));
+    struct guest_apc *a = malloc(sizeof *a);
+
+    if (!th || !a) {
+        free(a);
+        g_eax = 0xC0000008u;                 /* STATUS_INVALID_HANDLE */
+        return;
+    }
+    a->routine = STACK_ARG(1);
+    a->a1 = STACK_ARG(2);
+    a->a2 = STACK_ARG(3);
+    a->a3 = STACK_ARG(4);
+    if (!QueueUserAPC(bridge_guest_apc, th, (ULONG_PTR)a)) {
+        free(a);
+        g_eax = 0xC0000001u;                 /* STATUS_UNSUCCESSFUL */
+        return;
+    }
     g_eax = 0;
 }
 
