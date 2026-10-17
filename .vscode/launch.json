@@ -8,7 +8,7 @@
       "program": "${command:cmake.launchTargetPath}",
       "cwd": "${workspaceFolder}",
       // The RECOMP_* switches (CLAUDE.md), e.g.
-      // { "name": "RECOMP_SCALE", "value": "3" }, { "name": "RECOMP_D3D11_DEBUG", "value": "1" }
+      // { "name": "RECOMP_SCALE", "value": "3" }, { "name": "RECOMP_D3D9_STATS", "value": "1" }
       "environment": []
     }
   ]

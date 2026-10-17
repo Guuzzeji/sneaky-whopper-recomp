@@ -52,7 +52,7 @@ file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 set(GAME_SOURCES
     src/main.c
     src/recomp_manual.c
-    src/d3d11_backend.c
+    src/d3d9_hle.c
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c
@@ -77,23 +77,19 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/recomp
     ${XBOXRECOMP_DIR}/include
-    # d3d11_backend.c: the executor's back end interface and the texture
-    # format helpers it shares with the software path.
-    ${XBOXRECOMP_DIR}/src/kernel
+    # d3d9_hle.c: the toolkit's swizzle helpers.
     ${XBOXRECOMP_DIR}/src/d3d
 )
 
 # Windows SDK libraries needed at link time
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    d3d11
-    dxgi
-    dxguid
+    d3d9
     xinput
     winmm
     # Lets the fault handler resolve the host RIP back to the generated
     # function's symbol, i.e. to the guest function that faulted.
     dbghelp
-    # d3d11_backend.c compiles its two shaders at startup.
+    # d3d9_hle.c compiles the title's vertex programs at run time.
     d3dcompiler
 )
 

@@ -546,12 +546,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     /* What a normal run needs, on unless set to 0, so the exe runs as is
      * from an IDE or Explorer. RECOMP_AC97_READY: without it DirectSound
-     * init fails and the game shuts itself down. RECOMP_PB_EXEC: without it
-     * nothing writes the D3D fence semaphore. RECOMP_FB_WINDOW: without it
-     * nothing is visible. Set before the memory layout, which reads the
-     * first two. */
+     * init fails and the game shuts itself down. RECOMP_FB_WINDOW: the
+     * window D3D9 presents into. Set before the memory layout, which reads
+     * the first. */
     env_default_on("RECOMP_AC97_READY");
-    env_default_on("RECOMP_PB_EXEC");
     env_default_on("RECOMP_FB_WINDOW");
 
     /* Freed memory has to come back. BlitzTech's heap takes 50 of the 64 MB
@@ -655,22 +653,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     printf("Initializing kernel bridge...\n");
     xbox_kernel_bridge_init();
 
-    /* XDK D3D's fence waits (D3D_BlockOnTime, 0x1EECB0) spin on the GPU
-     * semaphore at *(device+0x30). Under RECOMP_PB_EXEC the executor writes
-     * the pushbuffer's semaphore releases there; this names the global that
-     * holds the device pointer (D3D's g_pDevice, 0x0020D328). */
+    /* XDK D3D's fence waits (D3D_BlockOnTime, 0x1EECB0) spin until the GPU
+     * semaphore at *(device+0x30) reaches the time D3D stamped at
+     * device+0x2C. The draws were done on D3D9 inside the calls that made
+     * them, so the semaphore just follows the stamp (D3D's g_pDevice is
+     * 0x0020D328). The lifted D3D still writes a pushbuffer; the toolkit's
+     * NV2A model marks it consumed (DMA_GET) without executing it. */
     {
-        extern void nv2a_pb_set_semaphore_device_ptr(uint32_t device_ptr_va);
-        nv2a_pb_set_semaphore_device_ptr(0x0020D328);
+        extern int xbox_Nv2aMirrorFence(uint32_t device_ptr_va, uint32_t put_off,
+                                        uint32_t get_ptr_off);
+        xbox_Nv2aMirrorFence(0x0020D328, 0x2C, 0x30);
     }
 
-    /* Rasterise on the host GPU instead of the CPU (src/d3d11_backend.c).
-     * The executor still decodes and transforms; this fills the triangles.
-     * RECOMP_D3D11=0 keeps the software rasteriser. */
-    if (getenv("RECOMP_PB_EXEC")
-        && !(getenv("RECOMP_D3D11") && strcmp(getenv("RECOMP_D3D11"), "0") == 0)) {
-        extern int d3d11_backend_init(void);
-        d3d11_backend_init();
+    /* The game's D3D8 calls go to host Direct3D 9 (src/d3d9_hle.c). */
+    {
+        extern void d3d9_hle_init(void);
+        d3d9_hle_init();
     }
 
     /* Step 6: Initialize stack */

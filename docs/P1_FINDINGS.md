@@ -50,7 +50,9 @@ Date: 2026-10-16. Tools: `tools/p1_survey.py` (this repo), Ghidra 12.1.4 headles
 
 The `call [reg+disp]` count in `.text` (1,126) matches the C++ engine: func_id found 2,345 thiscall functions and 4,046 vtable methods. All of these need `RECOMP_ICALL` dispatch, and the P3 feedback loop has to cover them. The per-site lists are in `analysis/p1/{jump_tables,vtables}.json`.
 
-## 3. Graphics path decision: **B, the NV2A pushbuffer executor**
+## 3. Graphics path decision: **B, the NV2A pushbuffer executor** (superseded)
+
+> **2026-10-17: replaced by A, D3D8 HLE on Direct3D 9** (`src/d3d9_hle.c`, ROADMAP P7.5). The user wanted the game rendered the way the Xbox D3D8 drove it, mapped one to one onto a PC API, as a baseline for render bugs, and only that renderer. PC D3D8 is out: Windows ships `d3d8.dll` only as 32-bit, the SDK has no `d3d8.h`, and this build is x64. D3D9 keeps D3D8's model (fixed function, `SetTransform`, `SetRenderState`, `DrawPrimitiveUP`). Two things below turned out easier than P1 feared: render and texture-stage state live in guest arrays (`D3D_g_RenderState` `0x20D090`, `D3D_g_DeferredTextureState` `0x20CE90`), so the setters need no reimplementing, and the game's inlined setters write those arrays directly anyway. Vertex programs reuse the decoding of `nv2a_vsh_interp.c`. The rest of this section is the original P1 reasoning.
 
 Evidence:
 

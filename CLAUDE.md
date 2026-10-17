@@ -22,7 +22,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 | `game/` | Extracted disc: 143 files, 1.55 GB, including `default.xbe` and `default_analysis.json`. |
 | `analysis/{disasm,func_id,abi}/` | Pipeline output (functions, xrefs, labels, strings, identified functions, ABI). |
 | `src/main.c`, `src/recomp_manual.c` | Host entry point and manual overrides. Made from the xboxrecomp `templates/new-game`. |
-| `src/d3d11_backend.c` | D3D11 render back end for the PB executor (P5): the host GPU fills the triangles. |
+| `src/d3d9_hle.c` | The game's Xbox D3D8 mapped onto host Direct3D 9: wrapped entry points, state translation, textures, render targets, vertex programs, present. |
 | `src/recomp/gen/` | Generated lifted C (Phase 2 onward). |
 | `tools/p1_survey.py` | P1 survey (gaps, data pointers, vtables, jump tables, D3D usage, threads). Writes to `analysis/p1/`. |
 | `seeds/` | Seed lists for `tools.disasm --seed-functions`. They hold addresses only. |
@@ -40,7 +40,12 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
   - 13,650 functions after the P2 seeds (13,318 in P1; 10,554 in `.text`)
   - 2,345 thiscall functions (C++)
   - 698 function pointers in data tables
-- D3D8 (non-LTCG) is statically linked. **Graphics path: NV2A pushbuffer executor.** This was decided in P1; see `docs/P1_FINDINGS.md`. Override only the D3D entry points that wait on hardware.
+- D3D8 (non-LTCG) is statically linked. **Graphics path: D3D8 HLE on Direct3D 9** (`src/d3d9_hle.c`). It replaced the NV2A pushbuffer executor, the D3D11 back end and the software rasteriser; see `docs/P1_FINDINGS.md` §3. D3D9 is the only renderer: don't reintroduce another one.
+  - The game's D3D entry points are wrapped (`sub_X` → `hle_*`). Setters run the lifted body and mirror into D3D9; draws, Clear and the present are replaced.
+  - Render and texture-stage state are read from D3D's guest arrays at each draw: `D3D_g_RenderState` `0x20D090` (XDK 5849 indices) and `D3D_g_DeferredTextureState` `0x20CE90`. The current render target and depth surface are at `device+0x1A04` and `device+0x1A08`.
+  - Vertex programs: NV2A microcode is translated to `vs_2_0` HLSL, decoded the way the toolkit's `nv2a_vsh_interp.c` does. `SetVertexShaderConstant1/4/NotInline` take the hardware register (0..191), and NotInline's count is in dwords.
+  - The lifted D3D still writes a pushbuffer. Nothing executes it: the toolkit's NV2A model moves DMA_GET to PUT, and `xbox_Nv2aMirrorFence` keeps D3D's semaphore at its time stamp, so fence waits return.
+  - Pixel shaders (register combiners) are not translated yet. The title creates two; none was bound in the menus or the first level.
 - Applied function names carry a prefix: `xdk_` for XbSymbolDatabase names and `crt_` for Ghidra FidDb names. Without it, XDK names collide with toolkit runtime symbols.
 
 ## Environment
@@ -70,7 +75,7 @@ Run these from `C:\repos\xboxrecomp`, with `$py` set to the venv Python, `$x` to
 & $py tools\ghidra_naming\merge_names.py --names-json $a\names_combined.json --functions-json $a\disasm\functions.json --apply   # after disasm, before recomp
 & $py -m tools.func_id $x --functions $a\disasm\functions.json --strings $a\disasm\strings.json --xrefs $a\disasm\xrefs.json -o $a\func_id
 & $py -m tools.abi_analysis $x --disasm-dir $a\disasm --func-id-dir $a\func_id --output-dir $a\abi
-& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir C:\repos\sneak-king-recomp\src\recomp\gen --game-name "Sneak King" --exclude-manual C:\repos\sneak-king-recomp\src\recomp_manual.c
+& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir C:\repos\sneak-king-recomp\src\recomp\gen --game-name "Sneak King" --exclude-manual C:\repos\sneak-king-recomp\src\recomp_manual.c --exclude-manual C:\repos\sneak-king-recomp\src\d3d9_hle.c
 ```
 
 Build from the repo root inside the vcvars wrapper. Keep parallelism low, because the generated files are huge. `CMakePresets.json` holds the settings (Ninja, 2 jobs): `release` builds `build\sneakking_recomp.exe`, `relwithdebinfo` builds an optimised exe with a PDB in `out\build\relwithdebinfo` (an unoptimised build of the generated code is too slow to play):
@@ -81,19 +86,17 @@ cmake --preset release && cmake --build --preset release
 
 **IDEs.** Visual Studio 2022: File > Open > Folder on the repo root, pick a preset in the toolbar, then F5. VS Code: needs the CMake Tools and C/C++ extensions; `.vscode/settings.json` makes CMake Tools use the presets, and the "Sneak King" launch configuration in `.vscode/launch.json` debugs the selected build (set `RECOMP_*` switches in its `environment`). Started without redirected output, the exe opens a console for its log.
 
-The exe finds the repo root itself: when `game\default.xbe` is not in the working directory, `main.c` walks up from the exe's folder to the one that holds it and works from there (`game\`, `mkb.ini` and `nv2a_shaders.bin` are relative to it).
+The exe finds the repo root itself: when `game\default.xbe` is not in the working directory, `main.c` walks up from the exe's folder to the one that holds it and works from there (`game\` and `mkb.ini` are relative to it).
 
 `main.c` turns on everything a normal run needs, so the exe runs with no switches set:
 - `RECOMP_AC97_READY`: without it, DirectSound init fails and the game shuts itself down.
-- `RECOMP_PB_EXEC`: without it, nothing writes the D3D fence semaphore.
-- `RECOMP_FB_WINDOW`: without it, nothing is visible.
+- `RECOMP_FB_WINDOW`: the window D3D9 presents into. Without it, nothing is visible.
 
 It also turns these on. Set any switch to `0` to turn it off:
 - `RECOMP_VBLANK`: the XMV player times frames by vblank.
 - `RECOMP_USB` and `RECOMP_MKB`: the pad on the emulated OHCI bus, and keyboard and mouse as a pad on port 0 (raw input, toolkit `src/input/mkb_input.c`). The bindings are in `mkb.ini` at the repo root (`RECOMP_MKB_INI` moves it): WASD move, mouse camera, Shift run, left click or Space A, right click or Q B, E Y, wheel zoom, F first person, Escape START, arrows and Enter for menus. F9 releases the mouse. `RECOMP_MKB=0` falls back to the keyboard-only `RECOMP_KEYBOARD` pad.
 - `RECOMP_HEAP_RECLAIM`: reuse freed contiguous memory. Without it the movies run the arena dry.
-- `RECOMP_D3D11`: rasterise on the host GPU (`src/d3d11_backend.c`). `RECOMP_D3D11=0` uses the software rasteriser.
-- `RECOMP_SCALE=N` (1 to 8, default 2): D3D11 render targets at N times the guest's 640x480, shown through a swap chain on the framebuffer window. Guest memory still gets the frame at 1x, so the frame dumps stay 640x480.
+- `RECOMP_SCALE=N` (1 to 8, default 2): D3D9 render targets at N times the guest's 640x480, shown through a swap chain on the framebuffer window.
 
 `main.c` also calls `timeBeginPeriod(1)`. Without it the APU clock oversleeps and audio underruns.
 
@@ -102,12 +105,13 @@ Other useful switches:
 - `RECOMP_KERNEL_LOG_BUDGET=N`: logs the first N kernel calls (the default is 200).
 - `RECOMP_SAMPLE_SECS=N`: profiles the main thread; `RECOMP_SAMPLE_DELAY=N` starts it later. `RECOMP_SAMPLE_ALL=1` samples every thread and prints each thread's CPU time and start address. Resolve the output with `tools/resolve_rva.py`.
 - `RECOMP_PEEK=0xVA,...`: reads guest dwords.
-- `RECOMP_PAD_LIVE=<file>`: each line appended to the file is a pad press (`start:200`, `down`, `a`, `b`). `RECOMP_PAD_SCRIPT=<ms>:<button>,...` is the same on a timeline. With `RECOMP_FB_DUMP=<prefix>` and `RECOMP_FB_WINDOW_DUMP_EVERY=<frames>`, this drives the menus with no one at the keyboard. START skips the movies.
+- `RECOMP_PAD_LIVE=<file>`: each line appended to the file is a pad press (`start:200`, `down`, `a`, `b`). `RECOMP_PAD_SCRIPT=<ms>:<button>,...` is the same on a timeline. With `RECOMP_D3D9_DUMP=<prefix>` and `RECOMP_D3D9_DUMP_EVERY=<presents>` (BMPs box-filtered to 640x480), this drives the menus with no one at the keyboard. START skips the movies.
 - `RECOMP_APU_TRACE=1`: per-voice audio stats once a second. `RECOMP_AUDIO_WAV=<path>` records the output.
-- `RECOMP_D3D11_STATS=1`: flips per second.
-- D3D11 debugger overlay: F1 toggles it, F2 shows each render target in turn, F3 wireframe, F4 bypasses the register combiners. `RECOMP_D3D11_DEBUG=1` creates the device with the debug layer (needs the Windows Graphics Tools feature), turns the overlay on, and prints the layer's messages.
+- `RECOMP_D3D9_STATS=1`: presents per second.
+- `RECOMP_D3D_TRACE=N`: logs the first N D3D calls with their register and stack arguments; `RECOMP_D3D_TRACE_ONLY=Name,Name` keeps just those.
+- `RECOMP_D3D9_DUMP_VSH=<dir>`: writes each translated vertex program as HLSL.
 
-The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster, plus the P7 fixes: `mkb_input.c` bindings from the ini (`bind.<PAD>=...`), held mouse buttons, generic Shift/Ctrl, and poll-rate-independent mouse aim, and `xbox_FramebufferWindowHwnd` / `xbox_FramebufferWindowExternalPresent` so a back end can present into the framebuffer window.
+The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster, plus the P7 fixes: `mkb_input.c` bindings from the ini (`bind.<PAD>=...`), held mouse buttons, generic Shift/Ctrl, and poll-rate-independent mouse aim, and `xbox_FramebufferWindowHwnd` / `xbox_FramebufferWindowExternalPresent` so a back end can present into the framebuffer window, plus the D3D9 fix: `tools.recomp --exclude-manual` can be given more than once.
 
 ## Debug loop (P3+)
 - **Indirect calls:**
@@ -122,6 +126,7 @@ The toolkit needs local patches that are not upstream yet. They are on the xboxr
   - `--force-return ADDR=VALUE` to make a function return a constant.
 - **Compare against reference:**
   - Compare behaviour with xemu.
-  - Use RenderDoc on the host D3D11 output.
+  - RenderDoc and PIX don't capture D3D9. Run the exe with DXVK's `d3d9.dll` beside it (D3D9 on Vulkan) and capture that, or use `RECOMP_D3D_TRACE`.
+  - Reference frames from the old D3D11 path are in `analysis/golden_d3d11/`. `tools/bmp2png.py` converts dumps for viewing.
   - Use REA to decompile and inspect the original function. Use Ghidra headless (`ghidra_naming`) for bulk naming.
 - **Upstream fixes:** keep toolkit fixes small, and send them upstream to xboxrecomp when they are generic.

@@ -157,12 +157,12 @@ Starts once P5 is complete, because input is what gets the game past "Press STAR
 
 - [ ] Render the main menu correctly: textures, swizzle, blending and register combiners. The menus now draw through the D3D11 back end, which applies blend, alpha test, depth and stencil. Texture stages 1–3, specular and fog do not reach a back end yet (`nv2a_backend.h`).
   - [x] The menus were at half brightness. Every menu batch has diffuse 0x80 and a combiner that scales by 2 (`COLOR_OCW` 0x00010C00, op SHIFTLEFTBY1, which is D3D's MODULATE2X). The back end drew texel × diffuse and dropped the ×2. Now `Nv2aBatch.rc` carries the combiner program (toolkit), and the D3D11 pixel shader evaluates it with an HLSL port of `nv2a_rc_eval`. The main menu and Help & Options render at full brightness.
-  - [ ] The software rasteriser (`RECOMP_D3D11=0`) still ignores stencil. After the menu, the game clears stencil to 0x80 and draws two black quads at alpha 0.25 with stencil NOTEQUAL 0x80, which hardware rejects everywhere. The software path draws both quads and darkens the frame.
+  - [x] ~~The software rasteriser (`RECOMP_D3D11=0`) still ignores stencil.~~ Moot: the software rasteriser is gone (P7.5). After the menu, the game clears stencil to 0x80 and draws two black quads at alpha 0.25 with stencil NOTEQUAL 0x80, which hardware rejects everywhere. The software path draws both quads and darkens the frame.
 - [ ] Compare frames with xemu. Use RenderDoc to inspect the host D3D11 output; the back end's device is offscreen, so capture it with RenderDoc's process injection.
 - [x] Get the Press START background video playing. Fixed in P5 by contiguous-memory reclaim.
 - [x] Get movies to full speed. Fixed in P5 by the trace gate and the D3D11 back end. On the main thread, the lifted MMX YUV→RGB copy (`sub_00280085`) is now the largest cost.
 - [ ] Remove the faint box around the loading icon.
-- [ ] D3D11 back end follow-ups: culling (off for now), Z16 depth clears, partial colour-mask clears, and LRU eviction for more than 16 render targets. Presenting through a swapchain would remove the per-frame readback.
+- [x] ~~D3D11 back end follow-ups.~~ Superseded: the D3D11 back end is gone (P7.5).
 
 **Exit:** every screen from boot through the main menu and its submenus renders and matches xemu visually, and movies play at full speed.
 
@@ -192,11 +192,25 @@ Starts once P5 is complete, because input is what gets the game past "Press STAR
 - [ ] Performance target is a locked 60 fps. Profile the hot generated functions.
 - [ ] Quality of life:
   - [ ] Windowed and fullscreen.
-  - [x] Resolution scaling. `RECOMP_SCALE=N` (default 2) renders every target at N times the guest surface and presents it through a D3D11 swap chain on the resizable window.
+  - [x] Resolution scaling. `RECOMP_SCALE=N` (default 2) renders every target at N times the guest surface and presents it through a swap chain on the resizable window (D3D9 since P7.5).
   - [x] Keyboard and mouse for gameplay and menus: the toolkit's raw-input layer (`mkb_input.c`), bound for this game in `mkb.ini`.
-  - [x] On-screen D3D11 debugger (F1): frame cost, caches, render targets, debug-layer messages (`RECOMP_D3D11_DEBUG=1`); F2 views each target, F3 wireframe, F4 bypasses the combiners.
+  - [x] ~~On-screen D3D11 debugger (F1-F4).~~ Removed with the D3D11 back end (P7.5).
   - [ ] Controller remapping.
 - [ ] Optional: the Linux/macOS build through xboxrecomp's OpenGL 3.3 + SDL2 path.
 - [ ] Distribution model: ship code only. The player supplies their own disc dump, and game data is never bundled.
 
 **Exit:** the game can be completed natively and is fun to play.
+
+## P7.5 — D3D8 on Direct3D 9 (a baseline for render bugs)
+
+The game's own D3D8 calls now go to host Direct3D 9, one to one, instead of through the NV2A pushbuffer: `src/d3d9_hle.c`. D3D9 is the only renderer. The executor, the software rasteriser and the D3D11 back end no longer run (`docs/P1_FINDINGS.md` §3).
+
+- [x] H0: wrap every D3D entry point the game uses (`sub_X` → `hle_*`, lifted body as `sub_X_gen`) with a call tracer (`RECOMP_D3D_TRACE`). One relift; behaviour changes after that touch only `d3d9_hle.c`. Toolkit: `--exclude-manual` can be repeated.
+- [x] H1: device, Clear and present. One host target per guest surface, scaled by `RECOMP_SCALE`, presented through a swap chain on the framebuffer window, paced to 60 Hz like the Xbox flip.
+- [x] H2: fixed function. Render and texture-stage state come from D3D's guest arrays (`D3D_g_RenderState`, `D3D_g_DeferredTextureState`), translated from the NV2A's GL enums. Textures upload in their own D3D9 formats (unswizzle only, DXT as is, P8 expanded). Menus and the loading screens match the D3D11 frames.
+- [x] H3: 3D fixed function. Transforms, lights, materials, stream sources, `DrawVertices`/`DrawIndexed*`. The saw mill renders.
+- [x] H4: vertex programs. NV2A microcode becomes `vs_2_0` HLSL, decoded as `nv2a_vsh_interp.c` does it; D3D's viewport epilogue is undone, its fog coordinate goes through the table mode in the shader. The King is skinned, lit and textured; the level frame differs from the D3D11 one by 3.3/255 on average.
+- [ ] H4b: pixel shaders (register combiners → `ps_2_0`/`ps_3_0`). The title creates two; none was bound in the menus or the first level.
+- [x] H5: movies. The XMV player decodes into a texture the game draws; the movie quad sits on the far plane (depth rounding, see `apply_fixed_function`). CPU writes to a render target (a movie into the back buffer) are found by hashing guest memory and uploaded.
+- [x] H6: retire the rest. `d3d11_backend.c` deleted; `RECOMP_PB_EXEC` off; `xbox_Nv2aMirrorFence` keeps D3D's semaphore at its time stamp, and the toolkit's NV2A model acknowledges the pushbuffer without executing it.
+- [ ] Follow-ups: GPU results are not copied back to guest memory (a title reading a render target with the CPU sees stale pixels); `ZBIAS` scale is a guess; no eviction past 32 targets or 2,048 textures; lost-device handling.
