@@ -65,19 +65,37 @@ Rules for every phase:
 - **Override** `sub_00064262`: XAPI's startup kernel patch, which writes kernel code at `0x8003xxxx` and installs a GDT descriptor (`0x641FE` → `0x6A1B8`). Stubbed to a bare `ret`.
 - **The remaining 1,441 `RECOMP_UNIMPL` are all data decoded as code**, never reached by real control flow: inline jump tables inside functions (memmove `0x1B26CC`, `0x13C7C5`, `0xBA4A8`, `0x1A7051`) and detector false positives over XGRPH's vertex-shader assembler tables (`0x2349xx–0x2377xx`), XMV codec tables, and D3D/DSOUND constant blocks. They compile to logged no-ops. If one is ever reached at runtime, `RECOMP_UNIMPL_TRAP=1` stops on it. The toolkit has no "data range" input to prune these; that would be an upstream feature.
 
-## P3 — Boot
+## P3 — Boot ✅
 
-- [ ] Get through the CRT/XAPI init, TLS, heap and stack.
-- [ ] Make `D:\` file I/O work against `game/`.
+- [x] Get through the CRT/XAPI init, TLS, heap and stack.
+- [ ] Make `D:\` file I/O work against `game/`. Opens and size queries work (`_T_E_S_T.___`, `packages\w_gameboot_fetm.xbp`); the game has not issued a package read yet, see "Next" below.
 - [ ] Run the indirect-call feedback loop:
   1. Build with `RECOMP_ICALL_FEEDBACK`.
   2. Merge the observed targets into `icall_seeds.json`.
   3. Run `disasm --seed-functions`.
   4. Lift again.
-- [ ] Fix boundaries using `--coalesce-functions`, `--trace-functions` and `recomp_manual.c` overrides.
-- [ ] Bring up the threads and sync objects without deadlocks.
+  So far the two unresolved targets were seeded by hand (`seeds/p3_runtime.json`); no ICALL failures remain on the boot path.
+- [ ] Fix boundaries using `--coalesce-functions`, `--trace-functions` and `recomp_manual.c` overrides. None needed yet.
+- [x] Bring up the threads and sync objects without deadlocks: XAPI main, an APC worker (`0x71260`) and a job worker (`0x1286E0`).
 
 **Exit:** the game reaches its main loop and the first `Present` or pushbuffer kick happens.
+
+**Result (2026-10-16):** the game boots to its main loop and presents at a steady 30 fps (`D3DDevice_Swap`), with DirectSound and the emulated APU running, in a 640×480 framebuffer window. The frames are clears only, so nothing is drawn yet. Run it as:
+
+```
+set RECOMP_AC97_READY=1 & set RECOMP_PB_EXEC=1 & set RECOMP_FB_WINDOW=1 & build\sneakking_recomp.exe
+```
+
+What it took:
+
+- **50 MB `XPhysicalAlloc` at startup** (BlitzTech's heap, `0x6D10F`). The toolkit's contiguous arena fills bottom-up and holds a 1 MB reserve at 15–16 MB, so no run fit. Upstream: first-fit now falls back to top-down placement, as the console kernel allocates (`xbox_ContiguousAllocEx`).
+- **Two code entries the sweep missed**: `0x1BB49E` (follows a noreturn call) and `0x2A7085` in XPP (follows `ret 8`). Seeded in `seeds/p3_runtime.json`.
+- **DirectSound init failed without the AC'97 codec**, and the game tore itself down. `RECOMP_AC97_READY=1` brings up the emulated APU.
+- **D3D fence wait** (`D3D_BlockOnTime`, `0x1EECB0`) spun on `*(device+0x30)`, which nothing wrote. Upstream: `nv2a_pb_set_semaphore_device_ptr()` names the device-pointer global, and the executor resolves the semaphore at the first `0x1D70` release. `main.c` registers `0x0020D328`.
+- **DSP reset every DoWork**: DSOUND checks the EP heartbeat word `0xFE85A018` for `0xCCCCCC`, which the Dolby microcode writes on hardware. Without it, DoWork reset both DSPs with a 10 ms stall on every call, taking most of each frame. Upstream: the APU frame clock writes the heartbeat.
+- **Diagnostics added**: `RECOMP_SAMPLE_SECS=N` samples the main thread's host stack (`main.c`), and `tools/resolve_rva.py` names the RVAs from `build/sneakking_recomp.map`.
+
+**Next (start of P4):** the boot mode (`CMode_GameBoot`, world `packages/w_GameBoot`) checks `w_gameboot_fetm.xbp` (open, size, close) and then idles. It never reads a package or opens `movies\BlitzIdent.xmv`. The main thread is otherwise idle in the frame limiter (`0x1A4680`). Find the state it is waiting for: trace the mode update under `0x1B0D60`, and compare the file sequence with xemu.
 
 ## P4 — First pixels
 

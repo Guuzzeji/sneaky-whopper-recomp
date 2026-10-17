@@ -286,6 +286,103 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* ── Sampling profiler (RECOMP_SAMPLE_SECS) ────────────────── */
+
+/* Where the main thread spends its time: suspended every 2 ms, its host stack
+ * is copied and scanned for return addresses into the exe, and the innermost
+ * two are counted as a pair. The watchdog says where a thread is stuck; this
+ * says where a thread that is busy but getting nowhere goes -- a frame loop
+ * that runs at full rate and never draws, for one.
+ *
+ * Release has no PDB, so it prints RVAs; tools/resolve_rva.py names them from
+ * build/sneakking_recomp.map (/MAP in CMakeLists.txt).
+ *
+ * Only a copy is taken while the thread is suspended: it may hold a heap or
+ * loader lock, and dbghelp (StackWalk64, SymFromAddr) deadlocked on one.
+ *
+ * ponytail: main thread only, a scan rather than an unwind (it over-reports
+ * like the crash handler's), a linear table of keys. Enough to rank a frame
+ * loop; per-thread sampling if a worker is the question. */
+static HANDLE s_sample_thread;
+
+static DWORD WINAPI sampler_proc(LPVOID arg)
+{
+    enum { SLOTS = 512, WORDS = 2048 };
+    static char keys[SLOTS][48];
+    static unsigned hits[SLOTS];
+    static uint64_t stack[WORDS];
+    DWORD end = GetTickCount() + (DWORD)(uintptr_t)arg * 1000;
+    uintptr_t lo = (uintptr_t)GetModuleHandleA(NULL);
+    uintptr_t hi = lo + ((IMAGE_NT_HEADERS *)(lo +
+                   ((IMAGE_DOS_HEADER *)lo)->e_lfanew))->OptionalHeader.SizeOfImage;
+    unsigned total = 0;
+    int used = 0, i, k;
+
+    Sleep(2000);                        /* past the XBE load */
+    while ((LONG)(end - GetTickCount()) > 0) {
+        CONTEXT ctx;
+        MEMORY_BASIC_INFORMATION mbi;
+        char key[48] = "";
+        int n, found = 0;
+
+        Sleep(2);
+        if (SuspendThread(s_sample_thread) == (DWORD)-1)
+            break;
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        if (!GetThreadContext(s_sample_thread, &ctx)) {
+            ResumeThread(s_sample_thread);
+            continue;
+        }
+        VirtualQuery((void *)ctx.Rsp, &mbi, sizeof(mbi));
+        n = (int)(((uintptr_t)mbi.BaseAddress + mbi.RegionSize - ctx.Rsp) / 8);
+        if (n > WORDS) n = WORDS;
+        memcpy(stack, (void *)ctx.Rsp, (size_t)n * 8);
+        ResumeThread(s_sample_thread);
+
+        for (k = 0; k < n && found < 2; k++) {
+            size_t l = strlen(key);
+            if (stack[k] < lo || stack[k] >= hi)
+                continue;
+            snprintf(key + l, sizeof(key) - l, "%s%llX", l ? " < " : "",
+                     (unsigned long long)(stack[k] - lo));
+            found++;
+        }
+        for (i = 0; i < used && strcmp(keys[i], key); i++)
+            ;
+        if (i == used && used < SLOTS)
+            snprintf(keys[used++], sizeof(keys[0]), "%s", key);
+        if (i < used)
+            hits[i]++;
+        total++;
+    }
+    fprintf(stderr, "[SAMPLE] %u samples of the main thread:\n", total);
+    for (k = 0; k < 40; k++) {
+        int best = -1;
+        for (i = 0; i < used; i++)
+            if (hits[i] && (best < 0 || hits[i] > hits[best]))
+                best = i;
+        if (best < 0)
+            break;
+        fprintf(stderr, "  %5.1f%%  %s\n", 100.0 * hits[best] / total,
+                keys[best]);
+        hits[best] = 0;
+    }
+    fflush(stderr);
+    return 0;
+}
+
+static void sampler_start(void)
+{
+    const char *s = getenv("RECOMP_SAMPLE_SECS");
+    if (!s || atoi(s) <= 0)
+        return;
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                    GetCurrentProcess(), &s_sample_thread, 0, FALSE,
+                    DUPLICATE_SAME_ACCESS);
+    CloseHandle(CreateThread(NULL, 0, sampler_proc,
+                             (LPVOID)(uintptr_t)atoi(s), 0, NULL));
+}
+
 /* ── WinMain ───────────────────────────────────────────────── */
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
@@ -363,6 +460,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     printf("Initializing kernel bridge...\n");
     xbox_kernel_bridge_init();
 
+    /* XDK D3D's fence waits (D3D_BlockOnTime, 0x1EECB0) spin on the GPU
+     * semaphore at *(device+0x30). Under RECOMP_PB_EXEC the executor writes
+     * the pushbuffer's semaphore releases there; this names the global that
+     * holds the device pointer (D3D's g_pDevice, 0x0020D328). */
+    {
+        extern void nv2a_pb_set_semaphore_device_ptr(uint32_t device_ptr_va);
+        nv2a_pb_set_semaphore_device_ptr(0x0020D328);
+    }
+
     /* Step 6: Initialize stack */
     g_esp = XBOX_STACK_TOP;
 
@@ -408,6 +514,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * silently inert, and the one diagnostic that tells a hang from slowness
      * does nothing while appearing to be set. */
     xbox_WatchdogStart();
+    sampler_start();
 
     /* Step 7: Call the recompiled entry point */
     printf("\nStarting game...\n");

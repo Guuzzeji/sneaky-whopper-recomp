@@ -79,6 +79,19 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -
 
 Run the exe from the repo root, because `main.c` uses the relative paths `game\default.xbe` and `game`.
 
+Run it with `RECOMP_AC97_READY=1`, `RECOMP_PB_EXEC=1` and `RECOMP_FB_WINDOW=1`:
+- Without the first, DirectSound init fails and the game shuts itself down.
+- Without the second, nothing writes the D3D fence semaphore.
+- Without the third, nothing is visible.
+
+Other useful switches:
+- `RECOMP_WATCHDOG_SECS=N`: dumps the guest stack of the boot thread after N seconds.
+- `RECOMP_KERNEL_LOG_BUDGET=N`: logs the first N kernel calls (the default is 200).
+- `RECOMP_SAMPLE_SECS=N`: profiles the main thread. Resolve its output with `tools/resolve_rva.py`.
+- `RECOMP_PEEK=0xVA,...`: reads guest dwords.
+
+The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3).
+
 ## Debug loop (P3+)
 - **Indirect calls:**
   1. Build with `RECOMP_ICALL_FEEDBACK`.

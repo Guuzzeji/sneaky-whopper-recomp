@@ -1,0 +1,4 @@
+[
+ {"start": "0x001BB49E", "note": "P3 runtime icall target: follows noreturn call at 0x1BB498"},
+ {"start": "0x002A7085", "note": "P3 runtime icall target (XPP): follows ret 8 at 0x2A7082"}
+]
