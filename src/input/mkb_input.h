@@ -73,9 +73,13 @@ int mkb_take_mouse_delta(long *dx, long *dy);
  * virtual pad is at rest and the pointer is free. */
 void mkb_set_suspended(int on);
 
-/* Show the pointer (and stop confining it) while the title is in a menu
- * that the host lets the mouse point at; keys and buttons still merge. */
+/* Show and free the pointer while the title is not in play (a menu, a
+ * loading or title screen); keys and buttons still merge. */
 void mkb_set_menu_cursor(int on);
+
+/* Whether the window should hide the pointer (its WM_SETCURSOR): captured,
+ * no overlay, no menu pointer. F9 releases; a click captures. */
+int mkb_cursor_hidden(void);
 
 #ifdef __cplusplus
 }

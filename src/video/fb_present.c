@@ -180,7 +180,15 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
     switch (m) {
     case WM_CLOSE:
     case WM_DESTROY:
+        /* Closing the window is quitting the game. Only stopping this loop
+         * left the guest threads (and their audio) running with no window.
+         * TerminateProcess, not ExitProcess: DLL detach would wait on guest
+         * threads that never yield. */
         InterlockedExchange(&s_fb_running, 0);
+        ClipCursor(NULL);
+        fprintf(stderr, "  [FBWIN] window closed, exiting\n");
+        fflush(stderr);
+        TerminateProcess(GetCurrentProcess(), 0);
         return 0;
 
     case WM_KEYDOWN:

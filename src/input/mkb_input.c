@@ -230,9 +230,31 @@ static volatile LONG s_suspended;    /* a host overlay owns mouse and keys */
 static volatile LONG s_menu_cursor;  /* show the pointer for a menu       */
 static volatile LONG s_thread_up;
 
-/* F9 is read on the input thread, so the toggle works even while the
- * game is stalled on the poll side. */
+/* F9 toggles capture; a click in the window captures again. Read on the
+ * input thread, so it works even while the game is stalled on the poll
+ * side. */
 #define MKB_TOGGLE_VK  VK_F9
+
+static int game_is_foreground(void);
+
+/* Whether the pointer is over the foreground window's client area. */
+static int cursor_in_foreground_client(void)
+{
+    POINT pt;
+    RECT r;
+    HWND fg = GetForegroundWindow();
+    if (!fg || !GetCursorPos(&pt) || !ScreenToClient(fg, &pt) || !GetClientRect(fg, &r))
+        return 0;
+    return PtInRect(&r, pt);
+}
+
+static void mkb_set_active(LONG on, const char *why)
+{
+    if (InterlockedExchange(&s_active, on) == on)
+        return;
+    fprintf(stderr, "  [MKB] %s (%s)\n", on ? "captured" : "released", why);
+    fflush(stderr);
+}
 
 static void mkb_handle_raw(HRAWINPUT h)
 {
@@ -250,6 +272,13 @@ static void mkb_handle_raw(HRAWINPUT h)
         if (!(m->usFlags & MOUSE_MOVE_ABSOLUTE)) {
             if (m->lLastX) InterlockedAdd(&s_dx, m->lLastX);
             if (m->lLastY) InterlockedAdd(&s_dy, m->lLastY);
+        }
+        /* Released: a left click in the window captures, and is not passed
+         * on as a press. */
+        if (!s_active && !s_suspended && (m->usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN)
+                && game_is_foreground() && cursor_in_foreground_client()) {
+            mkb_set_active(1, "click");
+            return;
         }
         /* Buttons 0..4 have their DOWN flag at bit 2i and UP at 2i+1. A
          * click also latches, so one that starts and ends between two polls
@@ -270,15 +299,9 @@ static void mkb_handle_raw(HRAWINPUT h)
         const RAWKEYBOARD *k = &ri->data.keyboard;
         UINT vk = k->VKey;
 
-        if (vk == MKB_TOGGLE_VK) {
-            if (k->Message == WM_KEYDOWN && !s_vk_down[vk & 0xFF]) {
-                LONG now = !s_active;
-                InterlockedExchange(&s_active, now);
-                fprintf(stderr, "  [MKB] %s\n", now ? "captured"
-                                                    : "released (F9)");
-                fflush(stderr);
-            }
-        }
+        if (vk == MKB_TOGGLE_VK && k->Message == WM_KEYDOWN
+                && !s_vk_down[vk & 0xFF] && game_is_foreground())
+            mkb_set_active(!s_active, "F9");
         if (vk && vk < 256) {
             if (k->Message == WM_KEYDOWN || k->Message == WM_SYSKEYDOWN)
                 s_vk_down[vk] = 1;
@@ -386,29 +409,35 @@ static int game_is_foreground(void)
     return pid == GetCurrentProcessId();
 }
 
-/* Hide and confine the pointer while captured. Aiming with raw deltas
- * does not move the pointer by itself, but Windows still moves it from
- * the same physical movement, so it would wander across the screen and
- * end up clicking other apps' title bars. */
+/* Confine the pointer to the game window's client area while captured.
+ * Aiming with raw deltas does not move the pointer by itself, but Windows
+ * still moves it from the same physical movement, so it would wander
+ * across the screen and end up clicking other apps' title bars. Clipped
+ * again every 500 ms, which follows a moved window; unclipped only on the
+ * way out, so another app's clip is left alone. Hiding it is the window's
+ * job (WM_SETCURSOR, mkb_cursor_hidden): the cursor shape is per thread. */
 static void mkb_manage_cursor(int capture)
 {
-    static int hidden;          /* how many ShowCursor(FALSE) we owe  */
+    static int clipped;
     static unsigned long last;
-
     unsigned long now = GetTickCount();
-    if (now - last < 500 && (capture ? hidden : !hidden) == 0)
+    RECT r;
+    HWND fg;
+
+    if (!capture) {
+        if (clipped)
+            ClipCursor(NULL);
+        clipped = 0;
+        return;
+    }
+    if (clipped && now - last < 500)
         return;
     last = now;
-
-    if (capture) {
-        RECT r;
-        HWND fg = GetForegroundWindow();
-        if (fg && GetWindowRect(fg, &r))
-            ClipCursor(&r);
-        if (hidden < 5) { ShowCursor(FALSE); hidden++; }
-    } else {
-        if (hidden > 0) { ShowCursor(TRUE); hidden--; }
-        ClipCursor(NULL);
+    fg = GetForegroundWindow();
+    if (fg && GetClientRect(fg, &r)) {
+        MapWindowPoints(fg, NULL, (POINT *)&r, 2);
+        ClipCursor(&r);
+        clipped = 1;
     }
 }
 
@@ -529,7 +558,11 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     }
 
     /* ---- mouse: aim. `full` counts in 1/60 s is full throw ---- */
-    if (!s_direct && now - aim_t0 >= AIM_MS) {
+    /* Once the title takes the deltas itself the aim stick must rest: a
+     * value held from before would turn the camera on its own. */
+    if (s_direct) {
+        held_x = held_y = 0;
+    } else if (now - aim_t0 >= AIM_MS) {
         LONG dx = InterlockedExchange(&s_dx, 0);
         LONG dy = InterlockedExchange(&s_dy, 0);
         double per = (double)s_cfg.full * (aim_t0 && now - aim_t0 < 200
@@ -597,3 +630,8 @@ int mkb_take_mouse_delta(long *dx, long *dy)
 
 void mkb_set_suspended(int on)   { InterlockedExchange(&s_suspended, on != 0); }
 void mkb_set_menu_cursor(int on) { InterlockedExchange(&s_menu_cursor, on != 0); }
+
+int mkb_cursor_hidden(void)
+{
+    return mkb_enabled() && s_thread_up && s_active && !s_suspended && !s_menu_cursor;
+}
