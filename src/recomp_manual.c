@@ -22,7 +22,11 @@
 #include <stdint.h>
 #include <stddef.h>   /* ptrdiff_t */
 #include <string.h>   /* memcpy */
+#if defined(_WIN32)
 #include <windows.h>  /* GetTickCount */
+#else
+#include "platform/win32_compat.h"
+#endif
 
 /* ── ICALL trace ring buffer ───────────────────────────────── */
 
@@ -543,3 +547,28 @@ int menu_mouse_update(int x, int y)
     }
     return 1;
 }
+
+#ifdef RECOMP_MMIO_CENSUS
+/* Web port W0: which lifted functions touch the register apertures. Each new
+ * (function, page) pair is printed once. */
+static SRWLOCK g_census_lock = SRWLOCK_INIT;
+static struct { const char *func; uint32_t page; } g_census[4096];
+static int g_census_n;
+
+void xbox_mmio_census(const char *func, uint32_t va)
+{
+    uint32_t page = va & ~0xFFFu;
+    int i;
+    AcquireSRWLockExclusive(&g_census_lock);
+    for (i = 0; i < g_census_n; i++)
+        if (g_census[i].func == func && g_census[i].page == page)
+            break;
+    if (i == g_census_n && g_census_n < 4096) {
+        g_census[g_census_n].func = func;
+        g_census[g_census_n].page = page;
+        g_census_n++;
+        fprintf(stderr, "[mmio-census] %s %08X\n", func, page);
+    }
+    ReleaseSRWLockExclusive(&g_census_lock);
+}
+#endif

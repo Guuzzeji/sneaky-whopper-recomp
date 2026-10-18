@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sneak King</title>
+<style>
+  :root { --bg: #111; --fg: #ddd; --dim: #888; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 13px/1.4 system-ui, sans-serif; }
+  #wrap { display: flex; flex-direction: column; height: 100%; }
+  #stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  canvas { background: #000; max-width: 100%; max-height: 100%; aspect-ratio: 4 / 3; outline: none; }
+  #bar { padding: 6px 12px; color: var(--dim); display: flex; gap: 16px; flex-wrap: wrap; }
+  #log { height: 9em; overflow: auto; margin: 0; padding: 6px 12px; background: #000;
+         color: #9c9; font: 11px/1.3 ui-monospace, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <!-- The game renders into #canvas from a worker; frames come back as
+         ImageBitmaps and are shown on #screen (gl_hle.c swap_window). -->
+    <canvas id="canvas" width="1280" height="960" hidden></canvas>
+    <canvas id="screen" width="1280" height="960" tabindex="0"></canvas>
+  </div>
+  <div id="bar">
+    <span id="status">Loading...</span>
+    <span>Enter: START · arrows/WASD: move · click the picture for the mouse camera, Esc to release</span>
+  </div>
+  <pre id="log"></pre>
+</div>
+<script>
+  // Query-string switches become the program's environment, as RECOMP_* do
+  // natively: ?RECOMP_SCALE=1&RECOMP_D3D9_STATS=1
+  const params = new URLSearchParams(location.search);
+  const logEl = document.getElementById('log');
+  const lines = [];
+  function log(t) {
+    lines.push(t);
+    if (lines.length > 400) lines.splice(0, lines.length - 400);
+    logEl.textContent = lines.join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  if (!crossOriginIsolated)
+    log('Not cross-origin isolated: serve this folder with tools/serve.py (COOP/COEP).');
+  const screen = document.getElementById('screen').getContext('bitmaprenderer');
+  new BroadcastChannel('sk-frames').onmessage = (e) => screen.transferFromImageBitmap(e.data);
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: (t) => { console.log(t); log(t); },
+    printErr: (t) => { console.warn(t); log(t); },
+    preRun: [() => { for (const [k, v] of params) ENV[k] = v; }],
+    onRuntimeInitialized: () => { document.getElementById('status').textContent = 'Running'; },
+  };
+</script>
+<script src="sneakking_recomp.js"></script>
+</body>
+</html>

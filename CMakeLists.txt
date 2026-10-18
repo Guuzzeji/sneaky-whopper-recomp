@@ -21,6 +21,19 @@ add_compile_definitions(
     NOMINMAX
 )
 
+# Web port: compact guest memory, one block with every alias folded onto its
+# store and register access through explicit MMIO calls -- the layout
+# WebAssembly needs, buildable natively (xbox_memory_layout.h). The lifted code
+# must be generated with --mmio-range for the XDK D3D/DSOUND/XPP sections.
+option(RECOMP_COMPACT_MEM "Compact guest memory (the WebAssembly layout)" OFF)
+option(RECOMP_MMIO_CENSUS "Log lifted functions that touch MMIO" OFF)
+if(RECOMP_MMIO_CENSUS)
+    add_compile_definitions(RECOMP_MMIO_CENSUS)
+endif()
+if(RECOMP_COMPACT_MEM)
+    add_compile_definitions(XBOX_COMPACT_MEM)
+endif()
+
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 #
 # Option A: xboxrecomp as a subdirectory (simplest)
@@ -29,6 +42,13 @@ add_compile_definitions(
 # Option B: find_package (if you install xboxrecomp system-wide)
 #   find_package(xboxrecomp REQUIRED)
 #
+# WebAssembly (emcmake): the guest's threads are real threads, so every
+# object is built for shared memory.
+if(EMSCRIPTEN)
+    add_compile_options(-pthread)
+    add_link_options(-pthread)
+endif()
+
 # Adjust this path to point to your xboxrecomp clone:
 set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH
     "Path to the xboxrecomp toolkit root directory")
@@ -48,23 +68,33 @@ add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 # is silently left out of the build and shows up as unresolved externals.
 file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 
+# The renderer: d3d9 (d3d9_hle.c, Direct3D 9, with the F1 overlay) or gl
+# (gl_hle.c, OpenGL ES 3 / WebGL2: the web port's, testable here on GL 4.3).
+set(RECOMP_RENDERER "d3d9" CACHE STRING "Renderer back end: d3d9 or gl")
+set_property(CACHE RECOMP_RENDERER PROPERTY STRINGS d3d9 gl)
+
 # Core game sources
-set(GAME_SOURCES
-    src/main.c
-    src/recomp_manual.c
-    src/d3d9_hle.c
-    # The F1/F2 debug overlay, on the vendored Dear ImGui.
-    src/overlay.cpp
-    third_party/imgui/imgui.cpp
-    third_party/imgui/imgui_draw.cpp
-    third_party/imgui/imgui_tables.cpp
-    third_party/imgui/imgui_widgets.cpp
-    third_party/imgui/imgui_impl_dx9.cpp
-    third_party/imgui/imgui_impl_win32.cpp
-    # Add game-specific sources here, e.g.:
-    # src/asset_loader.c
-    # src/custom_renderer.c
-)
+if(EMSCRIPTEN)
+    set(RECOMP_RENDERER "gl" CACHE STRING "" FORCE)
+    set(GAME_SOURCES src/main_web.c src/web_host.c src/recomp_manual.c)
+else()
+    set(GAME_SOURCES src/main.c src/recomp_manual.c)
+endif()
+if(RECOMP_RENDERER STREQUAL "gl")
+    list(APPEND GAME_SOURCES src/gl_hle.c)
+else()
+    list(APPEND GAME_SOURCES
+        src/d3d9_hle.c
+        # The F1/F2 debug overlay, on the vendored Dear ImGui.
+        src/overlay.cpp
+        third_party/imgui/imgui.cpp
+        third_party/imgui/imgui_draw.cpp
+        third_party/imgui/imgui_tables.cpp
+        third_party/imgui/imgui_widgets.cpp
+        third_party/imgui/imgui_impl_dx9.cpp
+        third_party/imgui/imgui_impl_win32.cpp
+    )
+endif()
 
 # The recomp pipeline also generates a dispatch header and function declarations.
 # These are included by the generated .c files:
@@ -72,10 +102,17 @@ set(GAME_SOURCES
 #   src/recomp/recomp_dispatch.h     - binary search dispatch table
 #   src/recomp/recomp_types.h        - register model, ICALL macros, MEM helpers
 
+if(EMSCRIPTEN)
+    add_executable(${PROJECT_NAME}
+        ${GAME_SOURCES}
+        ${RECOMP_GEN_SOURCES}
+    )
+else()
 add_executable(${PROJECT_NAME} WIN32
     ${GAME_SOURCES}
     ${RECOMP_GEN_SOURCES}
 )
+endif()
 
 # Link against the xboxrecomp umbrella target (all 6 runtime libraries)
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
@@ -91,6 +128,30 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Windows SDK libraries needed at link time
+if(EMSCRIPTEN)
+    # The browser build: see docs/WEB_PORT_RESEARCH.md. main() runs on a
+    # pthread so the guest can block; the canvas moves to it as an
+    # OffscreenCanvas; game files come through WasmFS (main_web.c).
+    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".js")
+    target_link_options(${PROJECT_NAME} PRIVATE
+        -sPROXY_TO_PTHREAD
+        -sPTHREAD_POOL_SIZE=32
+        -sINITIAL_MEMORY=1536MB
+        -sSTACK_SIZE=16MB
+        -sDEFAULT_PTHREAD_STACK_SIZE=4MB
+        -sWASMFS
+        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2
+        -sOFFSCREENCANVAS_SUPPORT
+        -sENVIRONMENT=web,worker
+        -sEXPORTED_RUNTIME_METHODS=ENV
+        -sEXIT_RUNTIME=0
+        --profiling-funcs
+    )
+endif()
+if(RECOMP_RENDERER STREQUAL "gl" AND WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE opengl32)
+endif()
+if(WIN32)
 target_link_libraries(${PROJECT_NAME} PRIVATE
     d3d9
     xinput
@@ -103,6 +164,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     # overlay.cpp: the thread table and working set.
     psapi
 )
+endif()
 
 # MSVC-specific: large address aware, increase section limit for big generated files
 if(MSVC)
