@@ -136,7 +136,7 @@ static void irql_holder_add(void *ra)
             s_holders[i].ra = ra;
             s_holders[i].guest_esp = g_esp;
             s_holders[i].guest_ra = g_esp
-                ? *(uint32_t *)((uintptr_t)g_xbox_mem_offset + g_esp) : 0;
+                ? *(uint32_t *)xbox_GuestPtr(g_esp) : 0;
             return;
         }
 }

@@ -242,6 +242,69 @@ void *xbox_GetMemoryBase(void);
  * Returns 0 if memory is mapped at original Xbox addresses (ideal case).
  */
 ptrdiff_t xbox_GetMemoryOffset(void);
+
+/*
+ * Compact guest memory (XBOX_COMPACT_MEM; always on under Emscripten).
+ *
+ * The default layout maps the guest's 4 GB address space onto host address
+ * space one to one, and makes the RAM mirrors and the tiled aperture views of
+ * the same pages. A host that cannot alias pages (WebAssembly) gets one block
+ * instead, with every alias folded onto the store behind it:
+ *
+ *   block + 0x00000000  RAM, 64 MB        guest 0x00000000, mirrors every 64 MB
+ *   block + 0x04000000  contiguous, 64 MB guest 0x80000000, tiled 0xF0000000
+ *   block + 0x08000000  64 MB             guest 0xFC000000-0xFFFFFFFF
+ *                                         (NV2A, MCPX, flash)
+ *
+ * g_xbox_mem_offset is the block's host address, so RAM addresses still
+ * translate as va + offset. Anything that may hold another guest address
+ * goes through xbox_GuestPtr. Lifted code uses a branch-free form that
+ * ignores the top slice (recomp_types.h): only the functions built with
+ * --mmio-range reach it, and they go through xbox_MmioRead/Write.
+ */
+#if defined(__EMSCRIPTEN__) && !defined(XBOX_COMPACT_MEM)
+#define XBOX_COMPACT_MEM 1
+#endif
+#define XBOX_COMPACT_SIZE   0x0C000000u
+#define XBOX_COMPACT_CONTIG 0x04000000u
+#define XBOX_COMPACT_HIGH   0x08000000u
+#define XBOX_COMPACT_HIGH_VA 0xFC000000u
+
+extern ptrdiff_t g_xbox_mem_offset;
+
+static inline uint32_t xbox_CompactOffset(uint32_t va)
+{
+    if (va >= XBOX_COMPACT_HIGH_VA)
+        return va - XBOX_COMPACT_HIGH_VA + XBOX_COMPACT_HIGH;
+    return (va & 0x03FFFFFFu) | ((va >> 5) & XBOX_COMPACT_CONTIG);
+}
+
+/* Host address of a guest VA, in either layout. */
+static inline void *xbox_GuestPtr(uint32_t va)
+{
+#if defined(XBOX_COMPACT_MEM)
+    return (void *)((uintptr_t)g_xbox_mem_offset + xbox_CompactOffset(va));
+#else
+    return (void *)((uintptr_t)va + g_xbox_mem_offset);
+#endif
+}
+
+#define XBOX_GVA(va) ((uintptr_t)xbox_GuestPtr((uint32_t)(va)))
+
+/* The guest VA a host address inside guest memory names: the canonical one
+ * (RAM, 0x80000000 contiguous, or the top slice), never a mirror. */
+static inline uint32_t xbox_GuestVa(const void *host)
+{
+    uintptr_t rel = (uintptr_t)host - (uintptr_t)g_xbox_mem_offset;
+#if defined(XBOX_COMPACT_MEM)
+    if (rel >= XBOX_COMPACT_HIGH)
+        return (uint32_t)(rel - XBOX_COMPACT_HIGH + XBOX_COMPACT_HIGH_VA);
+    if (rel >= XBOX_COMPACT_CONTIG)
+        return (uint32_t)(rel - XBOX_COMPACT_CONTIG) | 0x80000000u;
+#endif
+    return (uint32_t)rel;
+}
+
 /* Bytes of guest address space mapped, for bounds-checking a guest pointer
  * that came out of guest memory rather than from this side. */
 size_t xbox_GetMappedSize(void);
@@ -259,6 +322,14 @@ int xbox_VehMmioFault(void *exception_pointers);
 #else
 int xbox_PosixMmioFault(void *ucv, uintptr_t fault);
 #endif
+
+/* Explicit MMIO (tools.recomp --mmio-range): register access as a call, for
+ * hosts with no page faults. xbox_MmioExplicit is 1 under Emscripten or
+ * compact memory, or with RECOMP_MMIO_EXPLICIT=1, and then no register page
+ * is trapped. */
+int      xbox_MmioExplicit(void);
+uint64_t xbox_MmioRead(uint32_t va, int size);
+void     xbox_MmioWrite(uint32_t va, uint64_t value, int size);
 
 /* Dump the guest call stack and abort if the title has not exited within
  * RECOMP_WATCHDOG_SECS seconds. Call from the thread that runs guest code;

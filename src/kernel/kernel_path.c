@@ -228,6 +228,12 @@ static const uint64_t s_part_sectors[6] = {
     0x00177000ull, /* 5: Z: cache                     */
 };
 
+/* A partition's size in bytes, from the table; 0 for the whole disk. */
+uint64_t xbox_PartitionBytes(int part)
+{
+    return part >= 1 && part <= 5 ? s_part_sectors[part] * 512ull : 0;
+}
+
 static void put_le32(unsigned char *p, uint32_t v)
 {
     p[0] = (unsigned char)v;         p[1] = (unsigned char)(v >> 8);
@@ -775,7 +781,13 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
             fd = open(path, O_WRONLY | O_CREAT, 0644);
             if (fd < 0)
                 continue;
+#if defined(__EMSCRIPTEN__)
+            /* WasmFS memory files are not sparse, so the images stay empty
+             * and kernel_file.c reads zeros past their end, as the hole. */
+            if (0)
+#else
             if (ftruncate(fd, (off_t)(s_part_sectors[part] * 512ull)) != 0)
+#endif
                 xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "%s: ftruncate: %s",
                          path, strerror(errno));
             close(fd);

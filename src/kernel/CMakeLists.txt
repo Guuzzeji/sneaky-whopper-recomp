@@ -45,6 +45,9 @@ if(WIN32)
     # platform is an INTERFACE target on Windows: it contributes the src/
     # include path that "platform/xbox_winnt.h" resolves against.
     target_link_libraries(xbox_kernel PUBLIC platform kernel32 bcrypt)
+elseif(EMSCRIPTEN)
+    # kernel_crypto.c is portable software; nothing else is needed.
+    target_link_libraries(xbox_kernel PUBLIC platform)
 else()
     # Linux: platform layer (POSIX host primitives) + OpenSSL for crypto.
     find_package(OpenSSL REQUIRED)

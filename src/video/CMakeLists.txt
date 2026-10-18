@@ -16,7 +16,9 @@ else()
     # The framebuffer window on POSIX hosts: SDL2, on the process main thread
     # (fb_present_sdl.c), which then also pumps the events the game
     # controllers are read from.
-    find_package(SDL2 REQUIRED)
+    if(NOT TARGET SDL2::SDL2)
+        find_package(SDL2 REQUIRED)
+    endif()
     target_sources(xbox_video PRIVATE fb_present_sdl.c)
     target_link_libraries(xbox_video PUBLIC SDL2::SDL2)
 endif()

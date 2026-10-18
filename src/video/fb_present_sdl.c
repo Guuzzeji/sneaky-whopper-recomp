@@ -47,7 +47,7 @@
 #include "video_player.h"
 #include "keyboard_sdl.h"     /* src/input: keys into the pad stand-in */
 
-extern ptrdiff_t xbox_GetMemoryOffset(void);
+#include "../kernel/xbox_memory_layout.h"   /* xbox_GuestPtr */
 extern void xbox_InputSetMainPump(int on);   /* src/input/xinput_device.c */
 extern int  xbox_InputAnyOpen(void);
 
@@ -144,7 +144,7 @@ static void present_copy(uint32_t fb_va, uint32_t pitch)
         s->px = n;
         s->cap = need;
     }
-    src = (const uint8_t *)((uintptr_t)fb_va + xbox_GetMemoryOffset());
+    src = (const uint8_t *)xbox_GuestPtr(fb_va);
     for (y = 0; y < FB_H; y++)
         memcpy(s->px + (size_t)y * FB_W * bpp, src + (size_t)y * pitch,
                (size_t)FB_W * bpp);
@@ -393,7 +393,7 @@ int xbox_HostWindowMain(int (*guest_main)(void))
             bpp = s_fb_pitch / FB_W;
             pitch = s_fb_pitch;
             if (bpp == 2 || bpp == 4)
-                px = (const uint8_t *)((uintptr_t)s_fb_va + xbox_GetMemoryOffset());
+                px = (const uint8_t *)xbox_GuestPtr(s_fb_va);
         }
         if (px) {
             if (!tex || bpp != tex_bpp) {

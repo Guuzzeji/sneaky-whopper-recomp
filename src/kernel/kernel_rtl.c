@@ -339,8 +339,7 @@ static void xbox_guest_backtrace(int depth)
     if (!sp || !g_xbox_code_hi)
         return;
     for (i = 0; i < 256 && shown < depth; i++) {
-        uint32_t word = *(const uint32_t *)((uintptr_t)(sp + i * 4)
-                                            + g_xbox_mem_offset);
+        uint32_t word = *(const uint32_t *)(XBOX_GVA((sp + i * 4)));
         if (word >= g_xbox_code_lo && word < g_xbox_code_hi) {
             fprintf(stderr, "  [CS]     guest 0x%08X\n", word);
             shown++;
@@ -374,8 +373,7 @@ static int xbox_crt_lock_index(uint32_t guest_va)
     if (!g_crt_lock_table)
         return -1;
     for (i = 0; i < g_crt_lock_count; i++) {
-        uint32_t slot = *(const uint32_t *)((uintptr_t)(g_crt_lock_table + i * 8)
-                                            + g_xbox_mem_offset);
+        uint32_t slot = *(const uint32_t *)(XBOX_GVA((g_crt_lock_table + i * 8)));
         if (slot == guest_va)
             return (int)i;
     }
@@ -407,7 +405,7 @@ static void crt_lock_trace(const char *what, PRTL_CRITICAL_SECTION guest)
     }
     if (!enabled)
         return;
-    va = (uint32_t)((uintptr_t)guest - (uintptr_t)g_xbox_mem_offset);
+    va = xbox_GuestVa(guest);
     idx = xbox_crt_lock_index(va);
     /* "all" logs by address as well as index. Whether a lock's release is
      * missing or merely unrecognised by the index lookup are different bugs,
@@ -485,13 +483,11 @@ VOID __stdcall xbox_RtlEnterCriticalSection(PRTL_CRITICAL_SECTION CriticalSectio
         fprintf(stderr, "  [CS] thread %lu waiting on guest lock 0x%08X"
                         " (held by thread %lu)\n",
                 GetCurrentThreadId(),
-                (uint32_t)((uintptr_t)CriticalSection
-                           - (uintptr_t)g_xbox_mem_offset),
+                xbox_GuestVa(CriticalSection),
                 (unsigned long)(uintptr_t)cs->OwningThread);
         {
             int idx = xbox_crt_lock_index(
-                (uint32_t)((uintptr_t)CriticalSection
-                           - (uintptr_t)g_xbox_mem_offset));
+                xbox_GuestVa(CriticalSection));
             if (idx >= 0)
                 fprintf(stderr, "  [CS]   that is CRT lock %d\n", idx);
         }
@@ -515,8 +511,7 @@ VOID __stdcall xbox_RtlEnterCriticalSection(PRTL_CRITICAL_SECTION CriticalSectio
     if (g_cs_contention_reports <= 16) {
         fprintf(stderr, "  [CS] thread %lu acquired 0x%08X\n",
                 GetCurrentThreadId(),
-                (uint32_t)((uintptr_t)CriticalSection
-                           - (uintptr_t)g_xbox_mem_offset));
+                xbox_GuestVa(CriticalSection));
         fflush(stderr);
     }
 }

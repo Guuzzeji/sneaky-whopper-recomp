@@ -12,6 +12,7 @@ add_library(xbox_apu STATIC
     apu_mmio_hook.c
     apu_xaudio2.c
     apu_sdl2.c
+    apu_web.c
     apu_wav.c
 )
 
@@ -45,6 +46,8 @@ if(WIN32)
 else()
     # POSIX (macOS, Linux): platform layer (Win32 primitives on POSIX),
     # SDL2 for the audio device (apu_sdl2.c) and libm
-    find_package(SDL2 REQUIRED)
+    if(NOT TARGET SDL2::SDL2)
+        find_package(SDL2 REQUIRED)
+    endif()
     target_link_libraries(xbox_apu PRIVATE platform SDL2::SDL2 m)
 endif()

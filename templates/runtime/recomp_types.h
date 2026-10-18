@@ -506,7 +506,37 @@ void recomp_trace_esp(const char *name, const char *tag);
  * uintptr_t cast preserves the overflow bits, landing us 4GB+ past
  * our mapping and causing access violations.
  */
+#if defined(__EMSCRIPTEN__) && !defined(XBOX_COMPACT_MEM)
+#define XBOX_COMPACT_MEM 1
+#endif
+#if defined(XBOX_COMPACT_MEM)
+/* Compact guest memory (xbox_memory_layout.h), for hosts that cannot map one
+ * page at several addresses (WebAssembly): RAM at block + 0 with its mirrors
+ * folded onto it, the contiguous window at block + 64 MB with the tiled
+ * aperture folded onto it. Branch-free: bit 31 picks the window. The register
+ * apertures at 0xFC000000 and up are not reachable this way; the functions
+ * that touch them are built with --mmio-range and use the MMIO_R and MMIO_W helpers. */
+static inline uintptr_t xbox_compact_ptr(uint32_t a)
+{
+    return (uintptr_t)g_xbox_mem_offset
+         + ((a & 0x03FFFFFFu) | ((a >> 5) & 0x04000000u));
+}
+#define XBOX_PTR(addr) xbox_compact_ptr((uint32_t)(addr))
+#elif defined(RECOMP_MMIO_CENSUS)
+/* Diagnostic build: report each lifted function that touches the register
+ * apertures (0xFD000000 and up), with the page it touched. */
+void xbox_mmio_census(const char *func, uint32_t va);
+static inline uint32_t xbox_census_va(const char *func, uint32_t a)
+{
+    if (a >= 0xFD000000u)
+        xbox_mmio_census(func, a);
+    return a;
+}
+#define XBOX_PTR(addr) ((uintptr_t)xbox_census_va(__func__, (uint32_t)(addr)) \
+                        + g_xbox_mem_offset)
+#else
 #define XBOX_PTR(addr) ((uintptr_t)(uint32_t)(addr) + g_xbox_mem_offset)
+#endif
 
 /** Read/write N bytes at a flat Xbox memory address. */
 #define MEM8(addr)   (*(volatile uint8_t  *)XBOX_PTR(addr))
@@ -522,6 +552,40 @@ void recomp_trace_esp(const char *name, const char *tag);
 /** Float/double memory access. */
 #define MEMF(addr)   (*(volatile float    *)XBOX_PTR(addr))
 #define MEMD(addr)   (*(volatile double   *)XBOX_PTR(addr))
+
+/* Explicit register access, emitted instead of MEM* in the functions named by
+ * tools.recomp --mmio-range (see tools/recomp/mmio_rewrite.py). Below the
+ * register apertures it is plain memory; at and above 0xFD000000 the runtime
+ * routes the access to the device that owns it (xbox_memory_layout.c). */
+uint64_t xbox_MmioRead(uint32_t va, int size);
+void     xbox_MmioWrite(uint32_t va, uint64_t value, int size);
+#define RECOMP_MMIO_BASE 0xFD000000u
+
+static inline uint8_t MMIO_R8(uint32_t a)
+{ return a < RECOMP_MMIO_BASE ? MEM8(a) : (uint8_t)xbox_MmioRead(a, 1); }
+static inline uint16_t MMIO_R16(uint32_t a)
+{ return a < RECOMP_MMIO_BASE ? MEM16(a) : (uint16_t)xbox_MmioRead(a, 2); }
+static inline uint32_t MMIO_R32(uint32_t a)
+{ return a < RECOMP_MMIO_BASE ? MEM32(a) : (uint32_t)xbox_MmioRead(a, 4); }
+static inline uint64_t MMIO_R64(uint32_t a)
+{ return a < RECOMP_MMIO_BASE ? *(volatile uint64_t *)XBOX_PTR(a) : xbox_MmioRead(a, 8); }
+static inline float MMIO_RF(uint32_t a)
+{ uint32_t u = MMIO_R32(a); float f; memcpy(&f, &u, 4); return f; }
+static inline double MMIO_RD(uint32_t a)
+{ uint64_t u = MMIO_R64(a); double d; memcpy(&d, &u, 8); return d; }
+
+static inline void MMIO_W8(uint32_t a, uint8_t v)
+{ if (a < RECOMP_MMIO_BASE) MEM8(a) = v; else xbox_MmioWrite(a, v, 1); }
+static inline void MMIO_W16(uint32_t a, uint16_t v)
+{ if (a < RECOMP_MMIO_BASE) MEM16(a) = v; else xbox_MmioWrite(a, v, 2); }
+static inline void MMIO_W32(uint32_t a, uint32_t v)
+{ if (a < RECOMP_MMIO_BASE) MEM32(a) = v; else xbox_MmioWrite(a, v, 4); }
+static inline void MMIO_W64(uint32_t a, uint64_t v)
+{ if (a < RECOMP_MMIO_BASE) *(volatile uint64_t *)XBOX_PTR(a) = v; else xbox_MmioWrite(a, v, 8); }
+static inline void MMIO_WF(uint32_t a, float f)
+{ uint32_t u; memcpy(&u, &f, 4); MMIO_W32(a, u); }
+static inline void MMIO_WD(uint32_t a, double d)
+{ uint64_t u; memcpy(&u, &d, 8); MMIO_W64(a, u); }
 
 /* ================================================================
  * SSE / XMM register state

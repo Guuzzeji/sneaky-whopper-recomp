@@ -49,6 +49,11 @@ int  xbox_OhciOwnsAddress(uint32_t xbox_va);
  * route to it) before it treats the fault as a crash. */
 int  xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va);
 
+/* Explicit register access, for hosts with no page faults: lifted code built
+ * with tools.recomp --mmio-range reaches here through xbox_MmioRead/Write. */
+uint64_t xbox_OhciRead(uint32_t xbox_va, int size);
+void     xbox_OhciWrite(uint32_t xbox_va, uint64_t val, int size);
+
 /* Report counts at exit, so a run says whether the driver ever looked. */
 void xbox_OhciReport(void);
 

@@ -521,20 +521,20 @@ static uint32_t rd32(uint32_t va)
     va = bus_resolve(va);
     if (!guest_ok(va, 4))
         return 0;
-    return *(uint32_t *)((uint8_t *)xbox_GetMemoryOffset() + va);
+    return *(uint32_t *)xbox_GuestPtr(va);
 }
 static void wr32(uint32_t va, uint32_t v)
 {
     va = bus_resolve(va);
     if (!guest_ok(va, 4))
         return;
-    *(uint32_t *)((uint8_t *)xbox_GetMemoryOffset() + va) = v;
+    *(uint32_t *)xbox_GuestPtr(va) = v;
 }
 static uint8_t *guest_ptr(uint32_t va, uint32_t bytes)
 {
     va = bus_resolve(va);
     return guest_ok(va, bytes)
-         ? (uint8_t *)xbox_GetMemoryOffset() + va : NULL;
+         ? (uint8_t *)xbox_GuestPtr(va) : NULL;
 }
 
 /* Transfer counts for RECOMP_USB_STATS: input reports served, control
@@ -870,15 +870,13 @@ static int ohci_call_isr(OhciController *hc)
     uint32_t kinterrupt = xbox_GetConnectedInterrupt(OHCI_VECTOR);
     uint32_t routine, context;
     recomp_func_t fn;
-    uint8_t *mem;
     int slot;
 
     if (!kinterrupt)
         return -1;                      /* nothing connected yet            */
 
-    mem     = (uint8_t *)xbox_GetMemoryOffset();
-    routine = *(uint32_t *)(mem + kinterrupt + 0);
-    context = *(uint32_t *)(mem + kinterrupt + 4);
+    routine = *(uint32_t *)xbox_GuestPtr(kinterrupt + 0);
+    context = *(uint32_t *)xbox_GuestPtr(kinterrupt + 4);
     if (!routine)
         return -1;
 
@@ -903,9 +901,9 @@ static int ohci_call_isr(OhciController *hc)
     g_esp = XBOX_WORKER_STACK_TOP(slot);
     g_eax = g_ecx = g_edx = g_ebx = g_esi = g_edi = 0;
 
-    g_esp -= 4; *(uint32_t *)(mem + g_esp) = context;      /* arg 2 */
-    g_esp -= 4; *(uint32_t *)(mem + g_esp) = kinterrupt;   /* arg 1 */
-    g_esp -= 4; *(uint32_t *)(mem + g_esp) = 0xDEADBEEFu;  /* return address */
+    g_esp -= 4; *(uint32_t *)xbox_GuestPtr(g_esp) = context;      /* arg 2 */
+    g_esp -= 4; *(uint32_t *)xbox_GuestPtr(g_esp) = kinterrupt;   /* arg 1 */
+    g_esp -= 4; *(uint32_t *)xbox_GuestPtr(g_esp) = 0xDEADBEEFu;  /* return address */
 
     { int _irql = xbox_IrqlEnterInterrupt(16); fn(); xbox_IrqlLeaveInterrupt(_irql); }
 
@@ -1287,6 +1285,7 @@ void xbox_OhciInit(void)
             s_ndp = (unsigned)s_npads;      /* a port for every pad */
     }
 #if !defined(OHCI_TRAP_WIN32) && !defined(OHCI_TRAP_POSIX_A64)
+    if (!xbox_MmioExplicit()) {
     /* No decoder for this host's instructions, so a trapped access could not
      * be answered. Leave the aperture as plain memory -- the title then sees
      * no controller, exactly as with RECOMP_USB unset -- and say so. */
@@ -1295,6 +1294,7 @@ void xbox_OhciInit(void)
                     "USB controllers disabled\n");
     fflush(stderr);
     return;
+    }
 #endif
 
     ohci_reset(&s_hc[0], XBOX_OHCI0_BASE, 0);
@@ -1309,8 +1309,11 @@ void xbox_OhciInit(void)
      *
      * A failed protect switches the model off rather than leaving it half on:
      * a controller whose registers read as zero out of RAM is exactly the
-     * situation this exists to end, and it would look identical. */
-    {
+     * situation this exists to end, and it would look identical.
+     *
+     * With explicit MMIO the lifted code calls xbox_OhciRead/Write instead,
+     * and nothing is trapped. */
+    if (!xbox_MmioExplicit()) {
         ptrdiff_t off = xbox_GetMemoryOffset();
         int i;
 
@@ -1362,7 +1365,6 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
     return hc_for(xbox_va) != NULL;
 }
 
-#if defined(OHCI_TRAP_POSIX_A64) || defined(OHCI_TRAP_WIN32)
 /* Both decoders hand over 8-byte accesses whole (ldr/str x or a d register
  * on A64, a REX.W mov on x86-64); the registers are 32-bit, so an 8-byte
  * access is two of them. */
@@ -1382,7 +1384,21 @@ static void ohci_write_split(void *dev, uint32_t off, uint64_t val, int size)
     }
     ohci_write(dev, off, val, size);
 }
-#endif
+
+/* Explicit access, for lifted code built with --mmio-range. The caller has
+ * checked xbox_OhciOwnsAddress. */
+uint64_t xbox_OhciRead(uint32_t xbox_va, int size)
+{
+    OhciController *hc = hc_for(xbox_va);
+    return hc ? ohci_read_split(hc, xbox_va - hc->base, size) : 0;
+}
+
+void xbox_OhciWrite(uint32_t xbox_va, uint64_t val, int size)
+{
+    OhciController *hc = hc_for(xbox_va);
+    if (hc)
+        ohci_write_split(hc, xbox_va - hc->base, val, size);
+}
 
 int xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va)
 {

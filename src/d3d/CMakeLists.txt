@@ -17,11 +17,17 @@ if(WIN32)
     # Offline smoke test for the pure format layer (no D3D11 device needed).
     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../tests/d3d8_smoke
                      ${CMAKE_CURRENT_BINARY_DIR}/d3d8_smoke)
+elseif(EMSCRIPTEN)
+    # A title on the web renders through its own GL ES back end (Sneak King:
+    # gl_hle.c); the desktop GL 3.3 one needs libepoxy.
+    add_library(xbox_d3d8 INTERFACE)
 else()
     add_library(xbox_d3d8 STATIC
         d3d8_gl.c
     )
-    find_package(SDL2 REQUIRED)
+    if(NOT TARGET SDL2::SDL2)
+        find_package(SDL2 REQUIRED)
+    endif()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(EPOXY REQUIRED epoxy)
     target_include_directories(xbox_d3d8 PRIVATE ${EPOXY_INCLUDE_DIRS})
@@ -33,6 +39,10 @@ else()
     target_link_libraries(xbox_d3d8 PUBLIC platform SDL2::SDL2 ${EPOXY_LINK_LIBRARIES})
 endif()
 
+if(EMSCRIPTEN)
+    target_include_directories(xbox_d3d8 INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+    return()
+endif()
 target_include_directories(xbox_d3d8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(MSVC)

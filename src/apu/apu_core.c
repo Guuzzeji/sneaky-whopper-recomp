@@ -103,8 +103,8 @@ uint8_t *mcpx_apu_phys(uint64_t addr)
      * only above that does the address wrap. */
     if (a >= (64u << 20)) {
         if (a < apu_mapped_ram())
-            return g_apu_ram_ptr + a;
-        return g_apu_ram_ptr + (a & 0x03FFFFFFu);
+            return (uint8_t *)xbox_GuestPtr(a);
+        return (uint8_t *)xbox_GuestPtr((a & 0x03FFFFFFu));
     }
     /* A heap page the title named through MmGetPhysicalAddress is RAM, even
      * where the contiguous allocator has handed out the same number as a
@@ -114,7 +114,7 @@ uint8_t *mcpx_apu_phys(uint64_t addr)
      * noise) and the stream played zeros. Only heap pages are recorded, so
      * the voice-array case below still holds for the image. */
     if (xbox_PhysRamNameMap()[a >> 12])
-        return g_apu_ram_ptr + a;
+        return (uint8_t *)xbox_GuestPtr(a);
     /* A page the contiguous allocator handed out is the window, even where
      * it overlaps the image's physical range: an image whose BSS runs past
      * 48 MB can have DirectSound's voice array at a window address inside
@@ -123,12 +123,12 @@ uint8_t *mcpx_apu_phys(uint64_t addr)
      * the image first: a USB driver can read its descriptors into .data on a
      * page the boot has also allocated as contiguous memory.) */
     if (xbox_ContiguousPageMap()[a >> 12])
-        return g_apu_ram_ptr + 0x80000000u + a;
+        return (uint8_t *)xbox_GuestPtr(0x80000000u + a);
     if (a >= g_xbox_image_lo && a < g_xbox_image_hi)
-        return g_apu_ram_ptr + a;
+        return (uint8_t *)xbox_GuestPtr(a);
     if (a < xbox_ContiguousAllocatedBytes())
-        return g_apu_ram_ptr + 0x80000000u + a;
-    return g_apu_ram_ptr + (a & 0x03FFFFFFu);
+        return (uint8_t *)xbox_GuestPtr(0x80000000u + a);
+    return (uint8_t *)xbox_GuestPtr((a & 0x03FFFFFFu));
 }
 
 /* Which of the cases above resolved an address, for the RECOMP_APU_TRACE
@@ -254,8 +254,8 @@ static void apu_deliver_irq(MCPXAPUState *d)
     kint = xbox_GetConnectedInterrupt(APU_VECTOR);
     if (!kint)
         return;
-    routine = *(uint32_t *)(g_apu_ram_ptr + kint + 0);
-    context = *(uint32_t *)(g_apu_ram_ptr + kint + 4);
+    routine = *(uint32_t *)xbox_GuestPtr(kint + 0);
+    context = *(uint32_t *)xbox_GuestPtr(kint + 4);
     fn = routine ? recomp_lookup(routine) : NULL;
     if (!fn)
         return;
@@ -273,9 +273,9 @@ static void apu_deliver_irq(MCPXAPUState *d)
     qemu_mutex_unlock(&d->lock);
     g_esp = XBOX_WORKER_STACK_TOP(slot);
     g_eax = g_ecx = g_edx = g_ebx = g_esi = g_edi = 0;
-    g_esp -= 4; *(uint32_t *)(g_apu_ram_ptr + g_esp) = context;
-    g_esp -= 4; *(uint32_t *)(g_apu_ram_ptr + g_esp) = kint;
-    g_esp -= 4; *(uint32_t *)(g_apu_ram_ptr + g_esp) = 0xDEADBEEFu;
+    g_esp -= 4; *(uint32_t *)xbox_GuestPtr(g_esp) = context;
+    g_esp -= 4; *(uint32_t *)xbox_GuestPtr(g_esp) = kint;
+    g_esp -= 4; *(uint32_t *)xbox_GuestPtr(g_esp) = 0xDEADBEEFu;
     { int _irql = xbox_IrqlEnterInterrupt(16); fn(); xbox_IrqlLeaveInterrupt(_irql); }
     xbox_worker_stack_free(slot);
     qemu_mutex_lock(&d->lock);
@@ -993,7 +993,7 @@ static void se_frame(MCPXAPUState *d)
      * it Sneak King (XDK 5849) reset the DSPs on every DoWork, most of each
      * frame. GP/EP memory is plain RAM (see MemoryLayoutInit), so a write is
      * all it takes. */
-    *(volatile uint32_t *)(g_apu_ram_ptr + 0xFE85A018u) = 0xCCCCCC;
+    *(volatile uint32_t *)xbox_GuestPtr(0xFE85A018u) = 0xCCCCCC;
 
     mcpx_apu_update_dsp_preference(d);
     mcpx_debug_begin_frame();

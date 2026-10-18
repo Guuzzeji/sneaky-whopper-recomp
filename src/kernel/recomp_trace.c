@@ -154,14 +154,13 @@ void recomp_trace_enter(const char *name, uint32_t va)
     fprintf(stderr, "[TRACE] -> %s (0x%08X)  from=%08X esp=%08X eax=%08X "
             "ecx=%08X esi=%08X edi=%08X ebx=%08X\n",
             name, va,
-            *(const uint32_t *)((uintptr_t)g_esp + xbox_GetMemoryOffset()),
+            *(const uint32_t *)xbox_GuestPtr(g_esp),
             g_esp, g_eax, g_ecx, g_esi, g_edi, g_ebx);
 
     /* The stack arguments too, when asked. Registers alone do not say which
      * argument arrived null, and for a function with a long argument list,
      * counting pushes back from the call site is guesswork. */
     if (getenv("RECOMP_TRACE_ARGS")) {
-        const uint8_t *mem = (const uint8_t *)xbox_GetMemoryOffset();
         int n = atoi(getenv("RECOMP_TRACE_ARGS"));
         int i;
 
@@ -170,7 +169,7 @@ void recomp_trace_enter(const char *name, uint32_t va)
         fprintf(stderr, "         args:");
         for (i = 1; i <= n; i++)
             fprintf(stderr, " %d=%08X", i,
-                    *(const uint32_t *)(mem + g_esp + i * 4));
+                    *(const uint32_t *)xbox_GuestPtr(g_esp + i * 4));
         fprintf(stderr, "\n");
         /* And the object eax points at. A matrix of NaNs says the maths went
          * wrong; whether its inputs were already zero says whether the maths
@@ -180,14 +179,14 @@ void recomp_trace_enter(const char *name, uint32_t va)
          * needs looking at -- the value alone says only that it is wrong. */
         if (getenv("RECOMP_TRACE_DEREF")) {
             for (i = 1; i <= n; i++) {
-                uint32_t a = *(const uint32_t *)(mem + g_esp + i * 4);
+                uint32_t a = *(const uint32_t *)xbox_GuestPtr(g_esp + i * 4);
                 int k;
                 if (a < 0x00010000u || a >= 0x04000000u)
                     continue;
                 fprintf(stderr, "         arg%d -> [%08X]:", i, a);
                 for (k = 0; k < 12; k++)
                     fprintf(stderr, " %08X",
-                            *(const uint32_t *)(mem + a + k * 4));
+                            *(const uint32_t *)xbox_GuestPtr(a + k * 4));
                 fprintf(stderr, "\n");
             }
         }
@@ -195,7 +194,7 @@ void recomp_trace_enter(const char *name, uint32_t va)
             fprintf(stderr, "         [eax=%08X]:", g_eax);
             for (i = 0; i < 24; i++)
                 fprintf(stderr, " %08X",
-                        *(const uint32_t *)(mem + g_eax + i * 4));
+                        *(const uint32_t *)xbox_GuestPtr(g_eax + i * 4));
             fprintf(stderr, "\n");
         }
     }
@@ -245,7 +244,6 @@ extern ptrdiff_t g_xbox_mem_offset;
 
 void recomp_debug_service(uint32_t service, uint32_t arg_va)
 {
-    const uint8_t *mem = (const uint8_t *)g_xbox_mem_offset;
     uint16_t length;
     uint32_t buffer_va;
 
@@ -259,13 +257,13 @@ void recomp_debug_service(uint32_t service, uint32_t arg_va)
     /* ANSI_STRING { USHORT Length; USHORT MaximumLength; PCHAR Buffer; } */
     if (!arg_va)
         return;
-    length    = *(const uint16_t *)(mem + arg_va);
-    buffer_va = *(const uint32_t *)(mem + arg_va + 4);
+    length    = *(const uint16_t *)xbox_GuestPtr(arg_va);
+    buffer_va = *(const uint32_t *)xbox_GuestPtr(arg_va + 4);
     if (!buffer_va || !length)
         return;
 
-    fprintf(stderr, "[GUEST] %.*s", (int)length, (const char *)(mem + buffer_va));
-    if (length && ((const char *)(mem + buffer_va))[length - 1] != '\n')
+    fprintf(stderr, "[GUEST] %.*s", (int)length, (const char *)xbox_GuestPtr(buffer_va));
+    if (length && ((const char *)xbox_GuestPtr(buffer_va))[length - 1] != '\n')
         fputc('\n', stderr);
     fflush(stderr);
 }

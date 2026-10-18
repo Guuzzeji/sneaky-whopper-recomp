@@ -32,7 +32,7 @@
 #include "keyboard.h"   /* src/input */
 #include "video_player.h"
 
-extern ptrdiff_t xbox_GetMemoryOffset(void);
+#include "../kernel/xbox_memory_layout.h"   /* xbox_GuestPtr */
 
 static volatile LONG s_fb_running;
 static HWND volatile s_fb_hwnd;
@@ -120,7 +120,7 @@ void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch)
             return;
     }
     bpp = pitch / s_fb_width;
-    src = (const uint8_t *)((uintptr_t)fb_va + xbox_GetMemoryOffset());
+    src = (const uint8_t *)xbox_GuestPtr(fb_va);
     for (y = 0; y < s_fb_height; y++) {
         const uint8_t *row = src + (size_t)y * pitch * (bpp == 8 ? s_fb_aa_sy : 1);
         uint32_t *dst = s_present[next] + (size_t)y * s_fb_width;
@@ -365,7 +365,7 @@ static DWORD WINAPI fb_thread(LPVOID unused)
             /* No flip yet, or pinned with RECOMP_FB_VA: read guest memory as
              * before, which is also what a title that never flips needs. */
             const uint8_t *src =
-                (const uint8_t *)((uintptr_t)s_fb_va + xbox_GetMemoryOffset());
+                (const uint8_t *)xbox_GuestPtr(s_fb_va);
             fb_convert(src, s_fb_pitch / s_fb_width);
             if (!s_fb_external)
                 StretchDIBits(hdc, 0, 0, (int)s_fb_width, (int)s_fb_height,

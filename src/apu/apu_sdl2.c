@@ -21,7 +21,7 @@
 #include <string.h>
 #include "apu_xaudio2.h"
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 
 #include <SDL.h>
 #include <time.h>
@@ -237,4 +237,4 @@ uint64_t xa2_samples_played(void)
     return g_samples_queued > queued ? g_samples_queued - queued : 0;
 }
 
-#endif /* !_WIN32 */
+#endif /* !_WIN32 && !__EMSCRIPTEN__ */

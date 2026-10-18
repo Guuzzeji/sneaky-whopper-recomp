@@ -48,6 +48,7 @@ static void *g_memory_base = NULL;
 static size_t g_memory_size = 0;
 static ptrdiff_t g_memory_offset = 0;  /* actual_base - XBOX_BASE_ADDRESS */
 
+
 /* Actual mapped RAM for this run; see the header. Default retail 64 MB. */
 size_t g_xbox_total_ram = XBOX_TOTAL_RAM;
 size_t g_xbox_map_size = 0;   /* 0 = same as RAM */
@@ -275,8 +276,26 @@ static uint64_t ext_vma_span(uint64_t mirror_top)
 /* Map a view of `mapping` at a fixed host address. On Windows, inside the
  * reserved window, the view replaces the placeholder there. Elsewhere this is
  * the MapViewOfFileEx call it always was. */
+/* Compact layout: every window lives in the one block allocated at init, so
+ * "mapping" one is zeroing its slice. NULL for an address outside the block. */
+static void *compact_window(void *addr, size_t size)
+{
+#if defined(XBOX_COMPACT_MEM)
+    uintptr_t a = (uintptr_t)addr, b = (uintptr_t)g_memory_base;
+    if (g_memory_base && a >= b && a + size <= b + XBOX_COMPACT_SIZE) {
+        memset(addr, 0, size);
+        return addr;
+    }
+#else
+    (void)addr; (void)size;
+#endif
+    return NULL;
+}
+
 static void *layout_map_view(HANDLE mapping, size_t size, void *addr)
 {
+    if (compact_window(addr, size))
+        return addr;
 #if defined(_WIN32)
     if (win_in_window((uintptr_t)addr, size)) {
         win_split_placeholder((uintptr_t)addr, size);
@@ -295,6 +314,8 @@ static void *layout_map_view(HANDLE mapping, size_t size, void *addr)
  * documented to work. */
 static void *layout_commit_at(void *addr, size_t size)
 {
+    if (compact_window(addr, size))
+        return addr;
 #if defined(_WIN32)
     if (win_in_window((uintptr_t)addr, size)) {
         win_split_placeholder((uintptr_t)addr, size);
@@ -723,6 +744,13 @@ static void ac97_arm_write_trap(void)
 
     if (!g_mcpx_memory || g_ac97_page)
         return;
+    if (xbox_MmioExplicit()) {
+        (void)old;
+        g_ac97_page = (char *)g_mcpx_memory + AC97_NABM_OFFSET;
+        fprintf(stderr, "  AC97: bus-master writes handled at 0x%08X"
+                        " (explicit MMIO)\n", XBOX_MCPX_BASE + AC97_NABM_OFFSET);
+        return;
+    }
 #if !defined(_WIN32) && !defined(__aarch64__)
     /* No POSIX decoder for this host's stores: a trapped write would be a
      * fault nothing services. Leave the page writable. */
@@ -863,6 +891,87 @@ int xbox_PosixMmioFault(void *ucv, uintptr_t fault)
 #endif
 
 /*
+ * Explicit MMIO: register access as a call instead of a trap.
+ *
+ * A host with no page faults (WebAssembly) cannot trap a register page, so
+ * the lifted functions that touch registers are generated with
+ * tools.recomp --mmio-range and reach the devices through these. On Windows
+ * RECOMP_MMIO_EXPLICIT=1 turns the traps off so the same path can be
+ * exercised natively. Same routing as the fault handlers above: the APU's
+ * register and VP window, the OHCI controllers, and the AC'97 bus-master page
+ * (a plain write, then the controller's reaction); everything else in the
+ * apertures is plain memory.
+ */
+#define MMIO_APU_MODEL_END (MMIO_APU_BASE + 0x00030000u)  /* regs + VP only */
+#define MMIO_AC97_PAGE     (XBOX_MCPX_BASE + AC97_NABM_OFFSET)
+
+int xbox_MmioExplicit(void)
+{
+#if defined(XBOX_COMPACT_MEM)
+    return 1;   /* the fault handlers assume the identity layout */
+#else
+    static int explicit_mmio = -1;
+    if (explicit_mmio < 0) {
+        const char *e = getenv("RECOMP_MMIO_EXPLICIT");
+        explicit_mmio = e && *e && *e != '0';
+    }
+    return explicit_mmio;
+#endif
+}
+
+uint64_t xbox_MmioRead(uint32_t va, int size)
+{
+    const volatile uint8_t *p;
+
+    if (va >= MMIO_APU_BASE && va < MMIO_APU_MODEL_END && g_apu_state) {
+        uint32_t off = va - MMIO_APU_BASE;
+        if (size == 8)
+            return mcpx_apu_mmio_read(g_apu_state, off, 4)
+                 | (mcpx_apu_mmio_read(g_apu_state, off + 4, 4) << 32);
+        return mcpx_apu_mmio_read(g_apu_state, off, (unsigned)size);
+    }
+    if (xbox_OhciOwnsAddress(va))
+        return xbox_OhciRead(va, size);
+    p = (const volatile uint8_t *)xbox_GuestPtr(va);
+    switch (size) {
+    case 1:  return *p;
+    case 2:  return *(const volatile uint16_t *)p;
+    case 4:  return *(const volatile uint32_t *)p;
+    default: return *(const volatile uint64_t *)p;
+    }
+}
+
+void xbox_MmioWrite(uint32_t va, uint64_t value, int size)
+{
+    volatile uint8_t *p;
+
+    if (va >= MMIO_APU_BASE && va < MMIO_APU_MODEL_END && g_apu_state) {
+        uint32_t off = va - MMIO_APU_BASE;
+        if (size == 8) {
+            mcpx_apu_mmio_write(g_apu_state, off, (uint32_t)value, 4);
+            mcpx_apu_mmio_write(g_apu_state, off + 4, value >> 32, 4);
+        } else {
+            mcpx_apu_mmio_write(g_apu_state, off, value, (unsigned)size);
+        }
+        return;
+    }
+    if (xbox_OhciOwnsAddress(va)) {
+        xbox_OhciWrite(va, value, size);
+        return;
+    }
+    p = (volatile uint8_t *)xbox_GuestPtr(va);
+    switch (size) {
+    case 1:  *p = (uint8_t)value; break;
+    case 2:  *(volatile uint16_t *)p = (uint16_t)value; break;
+    case 4:  *(volatile uint32_t *)p = (uint32_t)value; break;
+    default: *(volatile uint64_t *)p = value; break;
+    }
+    if (va >= MMIO_AC97_PAGE && va < MMIO_AC97_PAGE + AC97_TRAP_BYTES
+            && g_ac97_page)
+        ac97_clear_reset_bits();
+}
+
+/*
  * Command words the DSP stub completes instantly. A bring-up probe, not a
  * model.
  *
@@ -964,7 +1073,7 @@ static void poke_tick(void)
             continue;
         {
             volatile uint32_t *w = (volatile uint32_t *)
-                ((uintptr_t)g_poke[i].va + g_memory_offset);
+                (XBOX_GVA(g_poke[i].va));
             if (*w != g_poke[i].value)
                 *w = g_poke[i].value;
         }
@@ -983,7 +1092,7 @@ static void dsp_ack_tick(void)
             continue;
         {
             volatile uint32_t *w = (volatile uint32_t *)
-                ((uintptr_t)g_dsp_ack[i] + g_memory_offset);
+                (XBOX_GVA(g_dsp_ack[i]));
             if (*w)
                 *w = 0;
         }
@@ -1107,18 +1216,15 @@ static void counter_mirrors_tick(void)
 
         if (!fence_readable(g_counter_mirrors[i].device_ptr_va, 4))
             continue;
-        dev = *(volatile uint32_t *)((uintptr_t)g_counter_mirrors[i].device_ptr_va
-                                     + g_memory_offset);
+        dev = *(volatile uint32_t *)(XBOX_GVA(g_counter_mirrors[i].device_ptr_va));
         if (!fence_readable(dev + g_counter_mirrors[i].src_off, 4)
                 || !fence_readable(dev + g_counter_mirrors[i].dst_off, 4))
             continue;
         {
             volatile uint32_t *dst =
-                (volatile uint32_t *)((uintptr_t)(dev + g_counter_mirrors[i].dst_off)
-                                      + g_memory_offset);
+                (volatile uint32_t *)(XBOX_GVA((dev + g_counter_mirrors[i].dst_off)));
             uint32_t src =
-                *(volatile uint32_t *)((uintptr_t)(dev + g_counter_mirrors[i].src_off)
-                                       + g_memory_offset);
+                *(volatile uint32_t *)(XBOX_GVA((dev + g_counter_mirrors[i].src_off)));
             if (*dst != src)
                 *dst = src;
         }
@@ -1186,12 +1292,10 @@ void xbox_Nv2aFrameCounterFlip(void)
 
         if (!fence_readable(g_frame_counters[i].device_ptr_va, 4))
             continue;
-        dev = *(volatile uint32_t *)((uintptr_t)g_frame_counters[i].device_ptr_va
-                                     + g_memory_offset);
+        dev = *(volatile uint32_t *)(XBOX_GVA(g_frame_counters[i].device_ptr_va));
         if (!fence_readable(dev + g_frame_counters[i].counter_off, 4))
             continue;
-        *(volatile uint32_t *)((uintptr_t)(dev + g_frame_counters[i].counter_off)
-                               + g_memory_offset) += 1;
+        *(volatile uint32_t *)(XBOX_GVA((dev + g_frame_counters[i].counter_off))) += 1;
     }
 }
 
@@ -1219,12 +1323,10 @@ static void frame_counters_tick(void)
 
         if (!fence_readable(g_frame_counters[i].device_ptr_va, 4))
             continue;
-        dev = *(volatile uint32_t *)((uintptr_t)g_frame_counters[i].device_ptr_va
-                                     + g_memory_offset);
+        dev = *(volatile uint32_t *)(XBOX_GVA(g_frame_counters[i].device_ptr_va));
         if (!fence_readable(dev + g_frame_counters[i].counter_off, 4))
             continue;
-        *(volatile uint32_t *)((uintptr_t)(dev + g_frame_counters[i].counter_off)
-                               + g_memory_offset) += 1;
+        *(volatile uint32_t *)(XBOX_GVA((dev + g_frame_counters[i].counter_off))) += 1;
     }
 }
 
@@ -1240,12 +1342,10 @@ uint32_t xbox_Nv2aFenceWordVa(void)
 
         if (!fence_readable(g_fence_mirrors[i].device_ptr_va, 4))
             continue;
-        dev = *(volatile uint32_t *)((uintptr_t)g_fence_mirrors[i].device_ptr_va
-                                     + g_memory_offset);
+        dev = *(volatile uint32_t *)(XBOX_GVA(g_fence_mirrors[i].device_ptr_va));
         if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4))
             continue;
-        get_ptr = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off)
-                                         + g_memory_offset);
+        get_ptr = *(volatile uint32_t *)(XBOX_GVA((dev + g_fence_mirrors[i].get_ptr_off)));
         if (get_ptr >= 0x80000000u && get_ptr - 0x80000000u <= 0x04000000u - 4u
                 && !(get_ptr & 3u) && fence_readable(get_ptr, 4))
             return get_ptr;
@@ -1260,21 +1360,18 @@ static void fence_mirrors_tick(void)
 
         if (!fence_readable(g_fence_mirrors[i].device_ptr_va, 4))
             continue;
-        dev = *(volatile uint32_t *)((uintptr_t)g_fence_mirrors[i].device_ptr_va
-                                     + g_memory_offset);
+        dev = *(volatile uint32_t *)(XBOX_GVA(g_fence_mirrors[i].device_ptr_va));
         if (!fence_readable(dev + g_fence_mirrors[i].get_ptr_off, 4)
                 || !fence_readable(dev + g_fence_mirrors[i].put_off, 4))
             continue;
-        get_ptr = *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].get_ptr_off)
-                                         + g_memory_offset);
+        get_ptr = *(volatile uint32_t *)(XBOX_GVA((dev + g_fence_mirrors[i].get_ptr_off)));
         if (!fence_readable(get_ptr, 4))
             continue;
         {
             volatile uint32_t *fence =
-                (volatile uint32_t *)((uintptr_t)get_ptr + g_memory_offset);
+                (volatile uint32_t *)(XBOX_GVA(get_ptr));
             uint32_t put =
-                *(volatile uint32_t *)((uintptr_t)(dev + g_fence_mirrors[i].put_off)
-                                       + g_memory_offset);
+                *(volatile uint32_t *)(XBOX_GVA((dev + g_fence_mirrors[i].put_off)));
             if (*fence != put)
                 *fence = put;
         }
@@ -1334,7 +1431,7 @@ static void framebuffer_probe_tick(void)
     last_ms = now;
     if ((size_t)s_fb_va + s_fb_pitch * s_fb_height > g_memory_size)
         return;
-    p = (const uint32_t *)((uintptr_t)s_fb_va + g_memory_offset);
+    p = (const uint32_t *)(XBOX_GVA(s_fb_va));
     n = (s_fb_pitch * s_fb_height) / 4;
     for (i = 0; i < n; i++) {
         sum = sum * 33u + p[i];
@@ -1584,8 +1681,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
          * up XNet. A live clock is also just the truth -- KeTickCount ticks on
          * hardware whether or not anyone is asleep. GetTickCount() shares the
          * millisecond unit, so the rate matches. */
-        *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
-                               + g_memory_offset) = GetTickCount();
+        *(volatile uint32_t *)(XBOX_GVA((XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT))) = GetTickCount();
 
         Sleep(0);  /* yield; the waiter is spinning on another core */
     }
@@ -1764,7 +1860,6 @@ jmp_buf *recomp_setjmp_slot(uint32_t buf_va)
 
 int recomp_guest_longjmp(uint32_t buf_va, uint32_t value)
 {
-    const uint8_t *mem = (const uint8_t *)g_memory_offset;
     int i;
 
     for (i = s_jmp_used - 1; i >= 0; i--) {
@@ -1774,15 +1869,15 @@ int recomp_guest_longjmp(uint32_t buf_va, uint32_t value)
         /* The callee-saved registers and the stack, exactly as the CRT's
          * longjmp restores them: esp is the setjmp-time esp plus the return
          * address that setjmp's own ret would have popped. */
-        g_ebx = *(const uint32_t *)(mem + buf_va + 0x04);
-        g_edi = *(const uint32_t *)(mem + buf_va + 0x08);
-        g_esi = *(const uint32_t *)(mem + buf_va + 0x0C);
-        g_esp = *(const uint32_t *)(mem + buf_va + 0x10) + 4;
+        g_ebx = *(const uint32_t *)xbox_GuestPtr(buf_va + 0x04);
+        g_edi = *(const uint32_t *)xbox_GuestPtr(buf_va + 0x08);
+        g_esi = *(const uint32_t *)xbox_GuestPtr(buf_va + 0x0C);
+        g_esp = *(const uint32_t *)xbox_GuestPtr(buf_va + 0x10) + 4;
 
         /* ebp is a C local in every translated function, and a local modified
          * after setjmp is indeterminate once longjmp lands. Hand the resumed
          * frame its saved value back through the globals it already reads. */
-        g_seh_ebp = *(const uint32_t *)(mem + buf_va + 0x00);
+        g_seh_ebp = *(const uint32_t *)xbox_GuestPtr(buf_va + 0x00);
         g_ebp     = g_seh_ebp;
 
         s_jmp_used = i + 1;   /* the inner buffers died with their frames */
@@ -1880,8 +1975,7 @@ static int watch_is_code(uint32_t va)
 
 static void watch_report(void)
 {
-    const uint8_t *mem = (const uint8_t *)g_memory_offset;
-    uint32_t now = *(const uint32_t *)(mem + g_watch_va);
+    uint32_t now = *(const uint32_t *)xbox_GuestPtr(g_watch_va);
     uint32_t esp = g_esp, i, shown = 0;
 
     if (now == g_watch_last)
@@ -1899,7 +1993,7 @@ static void watch_report(void)
         uint32_t v;
         if (!peek_readable(slot))
             break;
-        v = *(const uint32_t *)(mem + slot);
+        v = *(const uint32_t *)xbox_GuestPtr(slot);
         if (watch_is_code(v)) {
             fprintf(stderr, "         [esp+%-4u] %08X\n", i * 4u, v);
             shown++;
@@ -1916,7 +2010,7 @@ static void watch_report(void)
             if (!peek_readable(slot))
                 break;
             fprintf(stderr, "         raw[esp+%-4u] %08X\n", i * 4u,
-                    *(const uint32_t *)(mem + slot));
+                    *(const uint32_t *)xbox_GuestPtr(slot));
         }
     }
     fflush(stderr);
@@ -2156,14 +2250,13 @@ static uint32_t g_watch_off;
 
 static int watch_resolve(uint32_t *out)
 {
-    const uint8_t *mem = (const uint8_t *)g_memory_offset;
     uint32_t a = g_watch_root;
     unsigned k;
 
     for (k = 0; k < g_watch_derefs; k++) {
         if (!peek_readable(a))
             return 0;
-        a = *(const uint32_t *)(mem + a);
+        a = *(const uint32_t *)xbox_GuestPtr(a);
         if (!a)
             return 0;
     }
@@ -2272,7 +2365,6 @@ static int watch_arm(uint32_t va)
  * tooling could not answer. Silent unless RECOMP_PEEK is set. */
 void xbox_PeekSample(const char *label)
 {
-    const uint8_t *mem = (const uint8_t *)g_memory_offset;
     const char *spec = getenv("RECOMP_PEEK");
     char buf[256], *q, *end;
 
@@ -2300,13 +2392,13 @@ void xbox_PeekSample(const char *label)
             end++;
         a = (uint32_t)va;
         for (k = 0; k < derefs && ok; k++) {
-            if (!peek_readable(a) || !(a = *(const uint32_t *)(mem + a)))
+            if (!peek_readable(a) || !(a = *(const uint32_t *)xbox_GuestPtr(a)))
                 ok = 0;
         }
         if (*end == '+')
             a += (uint32_t)strtoul(end + 1, &end, 0);
         if (ok && peek_readable(a))
-            fprintf(stderr, " [%08X]=%08X", a, *(const uint32_t *)(mem + a));
+            fprintf(stderr, " [%08X]=%08X", a, *(const uint32_t *)xbox_GuestPtr(a));
         else
             fprintf(stderr, " [%08X]=??", a);
         q = (*end == ',') ? end + 1 : end;
@@ -2317,13 +2409,11 @@ void xbox_PeekSample(const char *label)
 
 static DWORD WINAPI xbox_watchdog_thread(LPVOID unused)
 {
-    const uint8_t *mem;
     uint32_t esp, i;
 
     (void)unused;
     Sleep(s_watchdog_secs * 1000u);
 
-    mem = (const uint8_t *)g_memory_offset;
     esp = s_watchdog_esp ? *s_watchdog_esp : 0;
     fprintf(stderr, "[WATCHDOG] no exit after %us; guest esp=0x%08X\n"
             "  regs: eax=%08X ecx=%08X edx=%08X ebx=%08X esi=%08X edi=%08X\n",
@@ -2387,7 +2477,7 @@ static DWORD WINAPI xbox_watchdog_thread(LPVOID unused)
         uint32_t a = esp + i * 4;
         if (a < XBOX_STACK_BASE || a >= XBOX_STACK_TOP) break;
         fprintf(stderr, "    GS %08X %08X\n", a,
-                *(const uint32_t *)(mem + a));
+                *(const uint32_t *)xbox_GuestPtr(a));
     }
     fflush(stderr);
     /* Counts only, without the report's lock: the thread being reported
@@ -2491,6 +2581,18 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * With file mapping views, we create aliased mappings at 64 MB intervals
      * that all point to the same physical memory.
      */
+#if defined(XBOX_COMPACT_MEM)
+    if (g_memory_size != XBOX_COMPACT_CONTIG) {
+        fprintf(stderr, "xbox_MemoryLayoutInit: compact memory needs a 64 MB"
+                        " map, not %zu MB\n", g_memory_size >> 20);
+        return FALSE;
+    }
+    g_memory_base = VirtualAlloc(NULL, XBOX_COMPACT_SIZE,
+                                 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (g_memory_base)
+        fprintf(stderr, "xbox_MemoryLayoutInit: compact guest memory, %u MB"
+                        " at %p\n", XBOX_COMPACT_SIZE >> 20, g_memory_base);
+#else
     g_mapping_handle = CreateFileMappingA(
         INVALID_HANDLE_VALUE,   /* page file backed */
         NULL,                   /* default security */
@@ -2610,6 +2712,8 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
         }
     }
 
+#endif /* !XBOX_COMPACT_MEM */
+
     if (!g_memory_base) {
         fprintf(stderr, "xbox_MemoryLayoutInit: failed to map base view (%zu KB)\n",
                 g_memory_size / 1024);
@@ -2619,6 +2723,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
     }
 
     g_memory_offset = (uintptr_t)g_memory_base - XBOX_MAP_START;
+    g_xbox_mem_offset = g_memory_offset;    /* xbox_GuestPtr from here on */
 #if defined(_WIN32)
     fprintf(stderr, "xbox_MemoryLayoutInit: guest window reservation: %s,"
             " base %p", g_win_reserve_method, g_memory_base);
@@ -2700,7 +2805,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * Helper macro: convert Xbox VA to actual mapped address.
      * When g_memory_offset == 0 (ideal case), this is identity.
      */
-    #define XBOX_VA(va) ((void *)((uintptr_t)(va) + g_memory_offset))
+    #define XBOX_VA(va) ((void *)(XBOX_GVA((va))))
 
     /*
      * Copy XBE header to base address.
@@ -2919,7 +3024,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
              * slots, and kernel.h notes 366 is short by 12. A title importing
              * a high ordinal would have had its table truncated here. */
             for (uint32_t t = 0; t < XBOX_KERNEL_THUNK_TABLE_SIZE; t++) {
-                uint32_t entry = *(volatile uint32_t *)((uintptr_t)(thunk_va + t * 4) + g_memory_offset);
+                uint32_t entry = *(volatile uint32_t *)(XBOX_GVA((thunk_va + t * 4)));
                 if (entry == 0) break;
                 thunk_count++;
             }
@@ -2974,7 +3079,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * We use free space in the BSS area for the fake structures.
      */
     {
-        #define XBOX_VA(va) ((void *)((uintptr_t)(va) + g_memory_offset))
+        #define XBOX_VA(va) ((void *)(XBOX_GVA((va))))
         #define MEM32_INIT(va, val) (*(uint32_t *)XBOX_VA(va) = (uint32_t)(val))
 
         /* Fake TIB at address 0x0 */
@@ -3105,10 +3210,12 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * Reserved before the kernel page below, which lives inside it.
      */
     {
-        uintptr_t contig_native = XBOX_CONTIG_BASE + g_memory_offset;
+        uintptr_t contig_native = XBOX_GVA(XBOX_CONTIG_BASE);
+#if !defined(XBOX_COMPACT_MEM)
         g_contig_mapping = CreateFileMappingW(
             INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
             0, (DWORD)XBOX_CONTIG_SIZE, NULL);
+#endif
         g_contig_memory = g_contig_mapping
             ? layout_map_view(g_contig_mapping, XBOX_CONTIG_SIZE,
                               (LPVOID)contig_native)
@@ -3155,7 +3262,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * emulating NV2A. Nothing has needed that yet.
      */
     {
-        uintptr_t nv2a_native = XBOX_NV2A_BASE + g_memory_offset;
+        uintptr_t nv2a_native = XBOX_GVA(XBOX_NV2A_BASE);
         g_nv2a_memory = layout_commit_at((LPVOID)nv2a_native, XBOX_NV2A_SIZE);
         /* The pushbuffer survey rides on the same poll, so either
          * variable arms it. */
@@ -3196,7 +3303,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
      * emulating the device.
      */
     {
-        uintptr_t mcpx_native = XBOX_MCPX_BASE + g_memory_offset;
+        uintptr_t mcpx_native = XBOX_GVA(XBOX_MCPX_BASE);
         g_mcpx_memory = layout_commit_at((LPVOID)mcpx_native, XBOX_MCPX_SIZE);
         g_mcpx_regs = g_mcpx_memory;
         if (g_mcpx_memory) {
@@ -3253,13 +3360,17 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
                  * memory keeps what the title writes. */
                 enum { APU_TRAP_BYTES = 0x00030000 };
                 DWORD old_protect;
-                if (VirtualProtect((char *)g_mcpx_memory, APU_TRAP_BYTES,
-                                   PAGE_NOACCESS, &old_protect))
+                if (xbox_MmioExplicit())
+                    g_apu_mmio_trapped = 1;     /* the model answers; no trap */
+                else if (VirtualProtect((char *)g_mcpx_memory, APU_TRAP_BYTES,
+                                        PAGE_NOACCESS, &old_protect))
                     g_apu_mmio_trapped = 1;
                 if (g_apu_mmio_trapped)
-                    fprintf(stderr, "  APU: 0x%08X..0x%08X trapped for MMIO"
+                    fprintf(stderr, "  APU: 0x%08X..0x%08X %s"
                                     " (GP/EP DSP memory left as RAM)\n",
-                            XBOX_MCPX_BASE, XBOX_MCPX_BASE + APU_TRAP_BYTES);
+                            XBOX_MCPX_BASE, XBOX_MCPX_BASE + APU_TRAP_BYTES,
+                            xbox_MmioExplicit() ? "modelled, explicit MMIO"
+                                                : "trapped for MMIO");
                 *(volatile uint32_t *)((char *)g_mcpx_memory
                                        + MCPX_AC97_CODEC_STATUS)
                     |= MCPX_AC97_CODEC_READY;
@@ -3282,7 +3393,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
 
     /* Flash ROM aperture -- see XBOX_FLASH_BASE for why. */
     {
-        uintptr_t flash_native = XBOX_FLASH_BASE + g_memory_offset;
+        uintptr_t flash_native = XBOX_GVA(XBOX_FLASH_BASE);
 
         g_flash_memory = layout_commit_at((LPVOID)flash_native,
                                           XBOX_FLASH_SIZE);
@@ -3321,7 +3432,7 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
 #else
         #define KERNEL_ALLOC_SIZE KERNEL_PAGE_SIZE
 #endif
-        uintptr_t kernel_native = XBOX_KERNEL_BASE + g_memory_offset;
+        uintptr_t kernel_native = XBOX_GVA(XBOX_KERNEL_BASE);
         /* Already committed if the contiguous window above succeeded -
          * 0x80010000 sits inside it - so just use that storage. */
         g_kernel_memory = g_contig_memory
@@ -3349,6 +3460,10 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
             (unsigned)((XBOX_HEAP_TOP - XBOX_HEAP_BASE) / (1024 * 1024)),
             XBOX_HEAP_BASE, XBOX_HEAP_TOP);
 
+#if defined(XBOX_COMPACT_MEM)
+    fprintf(stderr, "  Compact memory: RAM mirrors and the tiled aperture fold"
+                    " onto their stores (no aliased views)\n");
+#else
     /*
      * Map mirror views of the 64 MB region.
      *
@@ -3514,11 +3629,9 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
                         " contiguous window is not mapped\n");
             } else {
                 volatile uint32_t *via_tiled =
-                    (volatile uint32_t *)((uintptr_t)(XBOX_TILED_BASE + 0x1000)
-                                          + g_memory_offset);
+                    (volatile uint32_t *)(XBOX_GVA((XBOX_TILED_BASE + 0x1000)));
                 volatile uint32_t *via_contig =
-                    (volatile uint32_t *)((uintptr_t)(XBOX_CONTIG_BASE + 0x1000)
-                                          + g_memory_offset);
+                    (volatile uint32_t *)(XBOX_GVA((XBOX_CONTIG_BASE + 0x1000)));
                 uint32_t saved = *via_contig;
 
                 *via_tiled = 0xA5C30F17u;
@@ -3543,6 +3656,8 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
                     XBOX_TILED_BASE, GetLastError());
         }
     }
+
+#endif /* !XBOX_COMPACT_MEM */
 
 #if defined(_WIN32)
     if (g_win_window_size)
@@ -3815,7 +3930,7 @@ static uint32_t heap_carve_free(uint32_t size, uint32_t alignment)
         g_heap_blocks[i].free = 0;
         if (back && !heap_insert_free(i + 1, start + size, back))
             g_heap_blocks[i].size += back;   /* table full: keep it attached */
-        memset((void *)((uintptr_t)start + g_memory_offset), 0, size);
+        memset((void *)(XBOX_GVA(start)), 0, size);
         return start;
     }
     return 0;
@@ -3856,7 +3971,7 @@ static int g_thread_stacks_used = 0;
 uint32_t xbox_AllocThreadTib(void)
 {
     /* XBOX_VA is scoped to the loader; the same arithmetic, spelled here. */
-    #define TIB_VA(va) ((void *)((uintptr_t)(va) + g_memory_offset))
+    #define TIB_VA(va) ((void *)(XBOX_GVA((va))))
     const uint32_t tib_size = 0x40;
     uint32_t tib, block, thread_data, total;
 
@@ -4146,7 +4261,7 @@ uint32_t xbox_ContiguousAllocEx(uint32_t size, uint32_t alignment,
     contig_unlock();
 
     if (result)
-        memset((void *)((uintptr_t)result + g_memory_offset), 0,
+        memset((void *)(XBOX_GVA(result)), 0,
                (size_t)n * CONTIG_PAGE);
     return result;
 }
@@ -4401,7 +4516,7 @@ static uint32_t heap_alloc_locked(uint32_t size, uint32_t alignment)
             }
             g_heap_blocks[i].free = 0;
             result = g_heap_blocks[i].addr;
-            memset((void *)((uintptr_t)result + g_memory_offset), 0, size);
+            memset((void *)(XBOX_GVA(result)), 0, size);
             return result;
         }
     }
@@ -4448,7 +4563,7 @@ static uint32_t heap_alloc_locked(uint32_t size, uint32_t alignment)
     g_heap_next = result + size;
 
     /* Zero-fill the allocated block (Xbox memory is always zeroed) */
-    memset((void *)((uintptr_t)result + g_memory_offset), 0, size);
+    memset((void *)(XBOX_GVA(result)), 0, size);
 
     if (g_heap_block_count < XBOX_HEAP_MAX_BLOCKS) {
         g_heap_blocks[g_heap_block_count].addr = result;

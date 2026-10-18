@@ -34,7 +34,7 @@
 #include <sys/stat.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
-#else
+#elif !defined(__EMSCRIPTEN__)
 #include <sys/sysinfo.h>
 #endif
 
@@ -529,11 +529,39 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms)
     return wait_single((w32_object *)h, ms);
 }
 
+/* An alertable wait ends for an APC queued while it waits, not only for one
+ * already queued: Sneak King's main thread hands its loader thread work as an
+ * APC, and a loader asleep on its event never saw it. QueueUserAPC does not
+ * wake the waiter, so the wait is taken in slices with the queue checked
+ * between them.
+ * ponytail: a 2 ms slice; signal the waiter from QueueUserAPC if the latency
+ * ever matters. */
+#define APC_SLICE_MS 2
+
 DWORD WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable)
 {
-    if (alertable && drain_apcs() > 0)
-        return WAIT_IO_COMPLETION;
-    return WaitForSingleObject(h, ms);
+    struct timespec end, now;
+    if (!alertable)
+        return WaitForSingleObject(h, ms);
+    if (ms != INFINITE)
+        deadline_from_ms(ms, &end);
+    for (;;) {
+        DWORD r, slice = APC_SLICE_MS;
+        if (drain_apcs() > 0)
+            return WAIT_IO_COMPLETION;
+        if (ms != INFINITE) {
+            long left;
+            clock_gettime(CLOCK_REALTIME, &now);
+            left = (long)(end.tv_sec - now.tv_sec) * 1000 + (end.tv_nsec - now.tv_nsec) / 1000000;
+            if (left <= 0)
+                return WaitForSingleObject(h, 0);
+            if (left < (long)slice)
+                slice = (DWORD)left;
+        }
+        r = WaitForSingleObject(h, slice);
+        if (r != WAIT_TIMEOUT)
+            return r;
+    }
 }
 
 /*
@@ -876,11 +904,18 @@ VOID Sleep(DWORD ms)
 
 DWORD SleepEx(DWORD ms, BOOL alertable)
 {
-    if (alertable && drain_apcs() > 0)
-        return WAIT_IO_COMPLETION;
+    /* As WaitForSingleObjectEx: an APC queued mid-sleep ends it. */
+    while (alertable) {
+        DWORD slice = ms < APC_SLICE_MS ? ms : APC_SLICE_MS;
+        if (drain_apcs() > 0)
+            return WAIT_IO_COMPLETION;
+        if (!ms)
+            return 0;
+        Sleep(slice);
+        if (ms != INFINITE)
+            ms -= slice;
+    }
     Sleep(ms);
-    if (alertable && drain_apcs() > 0)
-        return WAIT_IO_COMPLETION;
     return 0;
 }
 
@@ -1840,6 +1875,10 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
     b->ullAvailPhys     = avail;
     b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)swap.xsu_total;
     b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)swap.xsu_avail;
+#elif defined(__EMSCRIPTEN__)
+    /* WebAssembly: the linear memory is all there is. */
+    b->ullTotalPhys = b->ullTotalPageFile = (ULONGLONG)__builtin_wasm_memory_size(0) * 65536u;
+    b->ullAvailPhys = b->ullAvailPageFile = b->ullTotalPhys / 2;
 #else
     struct sysinfo si;
     if (sysinfo(&si) != 0) return FALSE;

@@ -23,6 +23,7 @@ import sys
 from .config import va_to_file_offset, is_code_address
 from . import config as _config
 from .disasm import Disassembler
+from . import mmio_rewrite
 from .lifter import (Lifter, lift_basic_block, detect_seh_helpers,
                      _RESULT_SNAPSHOT_SETTERS, _as_addr_set,
                      detect_setjmp_helpers, _func_ident, _operand_width)
@@ -448,6 +449,10 @@ class FunctionTranslator:
         "imm_ref_target", "data_ptr_target",
         "external_coalescence",
     })
+
+    # (lo, hi) VA ranges whose functions reach hardware registers by explicit
+    # MMIO calls instead of page traps (--mmio-range; see mmio_rewrite.py).
+    mmio_ranges = ()
 
     def __init__(self, xbe_data, func_db, label_db=None, classification_db=None,
                  abi_db=None, seh_prolog=None, seh_epilog=None,
@@ -2966,6 +2971,9 @@ class FunctionTranslator:
 
         lines.append(f"}}")
         lines.append(f"")
+
+        if any(lo <= start < hi for lo, hi in self.mmio_ranges):
+            lines = mmio_rewrite.rewrite_lines(lines)
 
         return "\n".join(lines)
 

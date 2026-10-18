@@ -948,6 +948,66 @@ NTSTATUS __stdcall xbox_RenameFileByHandle(
 /* ====================  POSIX backend  =================================== */
 /* ======================================================================== */
 
+/* Xbox paths are case-insensitive and POSIX ones are not: a title asking for
+ * MEDIA/Intro.xmv must find media/INTRO.XMV. Each component that does not
+ * exist as written is looked up in its directory without regard to case and
+ * corrected in place. One that matches nothing is left alone, so a file about
+ * to be created keeps the title's spelling. */
+#if defined(__EMSCRIPTEN__)
+/* Partition images (kernel_path.c) are sized as sparse files natively; a
+ * WasmFS memory file is not sparse, so they stay empty and a read past what
+ * has been written returns zeros, as the hole would. Holds the partition
+ * number of an image's fd. */
+static unsigned char s_sparse_fd[256];
+extern uint64_t xbox_PartitionBytes(int part);
+
+/* The size an empty partition image stands for, or 0 for any other file. */
+uint64_t xbox_SparseImageBytes(HANDLE h)
+{
+    int fd = w32_handle_fd(h);
+    return fd >= 0 && fd < 256 && s_sparse_fd[fd] ? xbox_PartitionBytes(s_sparse_fd[fd]) : 0;
+}
+#endif
+
+static void posix_fold_case(char *path)
+{
+    struct stat st;
+    char *p = path, *end;
+
+    if (stat(path, &st) == 0)
+        return;
+    for (;;) {
+        while (*p == '/')
+            p++;
+        if (!*p)
+            break;
+        end = strchr(p, '/');
+        if (end)
+            *end = 0;
+        if (stat(path, &st) != 0) {
+            DIR *d;
+            struct dirent *de;
+            if (p > path)
+                p[-1] = 0;
+            d = opendir(p > path ? (path[0] ? path : "/") : ".");
+            if (p > path)
+                p[-1] = '/';
+            if (d) {
+                while ((de = readdir(d)) != NULL)
+                    if (!strcasecmp(de->d_name, p) && strlen(de->d_name) == strlen(p)) {
+                        memcpy(p, de->d_name, strlen(p));
+                        break;
+                    }
+                closedir(d);
+            }
+        }
+        if (!end)
+            break;
+        *end = '/';
+        p = end + 1;
+    }
+}
+
 /* Convert Xbox access mask + disposition to POSIX open() flags. */
 static int posix_open_flags(ACCESS_MASK access, ULONG disposition)
 {
@@ -1092,6 +1152,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
         xbox_log(XBOX_LOG_ERROR, XBOX_LOG_FILE, "NtCreateFile: path translation failed");
         return STATUS_OBJECT_PATH_NOT_FOUND;
     }
+    posix_fold_case(host_path);
 
     int fd;
     /* A partition device opened as a directory: the volume, for a free-space
@@ -1122,6 +1183,13 @@ NTSTATUS __stdcall xbox_NtCreateFile(
         if (defer)
             flags &= ~O_TRUNC;
         fd = open(host_path, flags, 0644);
+#if defined(__EMSCRIPTEN__)
+        if (fd >= 0 && fd < 256) {
+            const char *b = strrchr(host_path, '/');
+            s_sparse_fd[fd] = b && !strncmp(b, "/Partition", 10) && strstr(b, ".img")
+                            ? (unsigned char)(b[10] - '0') : 0;
+        }
+#endif
         if (fd >= 0 && fd < FATX_PENDING_MAX)
             s_overwrite_pending[fd] = (unsigned char)defer;
         else if (fd >= 0 && defer && ftruncate(fd, 0) != 0) {
@@ -1181,6 +1249,13 @@ NTSTATUS __stdcall xbox_NtReadFile(
         lseek(fd, (off_t)ByteOffset->QuadPart, SEEK_SET);
 
     ssize_t n = read(fd, Buffer, Length);
+#if defined(__EMSCRIPTEN__)
+    if (n >= 0 && (ULONG)n < Length && fd < 256 && s_sparse_fd[fd]) {
+        memset((char *)Buffer + n, 0, Length - (ULONG)n);
+        lseek(fd, (off_t)(Length - (ULONG)n), SEEK_CUR);
+        n = (ssize_t)Length;
+    }
+#endif
     if (n < 0) {
         XBOX_TRACE(XBOX_LOG_FILE, "NtReadFile(handle=%p) errno=%d", FileHandle, errno);
         IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
@@ -1251,6 +1326,7 @@ NTSTATUS __stdcall xbox_NtDeleteFile(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes)
     const char* xbox_path = get_xbox_path(ObjectAttributes);
     if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH))
         return STATUS_OBJECT_PATH_NOT_FOUND;
+    posix_fold_case(host_path);
     XBOX_TRACE(XBOX_LOG_FILE, "NtDeleteFile: %s", host_path);
     if (unlink(host_path) == 0) return STATUS_SUCCESS;
     if (rmdir(host_path)  == 0) return STATUS_SUCCESS;
@@ -1539,6 +1615,7 @@ NTSTATUS __stdcall xbox_NtQueryFullAttributesFile(
     const char* xbox_path = get_xbox_path(ObjectAttributes);
     if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH))
         return STATUS_OBJECT_PATH_NOT_FOUND;
+    posix_fold_case(host_path);
     if (stat(host_path, &st) != 0)
         return STATUS_OBJECT_NAME_NOT_FOUND;
 

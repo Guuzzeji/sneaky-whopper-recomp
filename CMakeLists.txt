@@ -29,6 +29,15 @@ add_compile_definitions(
 # Platform: Win32/NT type vocabulary + POSIX implementation of generic
 # Win32 host primitives. Carries no Xbox semantics; provides the foundation
 # the kernel HLE and the graphics/audio/input layers build on.
+# WebAssembly: Emscripten's SDL2 port stands in for a system SDL2 (the
+# subdirectories only look for one when this target is missing).
+if(EMSCRIPTEN AND NOT TARGET SDL2::SDL2)
+    add_library(SDL2::SDL2 INTERFACE IMPORTED)
+    set_target_properties(SDL2::SDL2 PROPERTIES
+        INTERFACE_COMPILE_OPTIONS "-sUSE_SDL=2"
+        INTERFACE_LINK_OPTIONS "-sUSE_SDL=2")
+endif()
+
 add_subdirectory(src/platform)
 
 # Core: Xbox kernel replacement (memory layout, file I/O, threading, sync)

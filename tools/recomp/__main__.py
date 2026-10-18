@@ -190,6 +190,11 @@ def _report_unimplemented(stats):
         print(f"    ... and {len(ranked) - 20} more", file=sys.stderr)
 
 
+def _parse_range(text):
+    lo, hi = text.split("-")
+    return int(lo, 16), int(hi, 16)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Xbox x86 -> C Static Recompiler")
@@ -272,6 +277,13 @@ def main():
     parser.add_argument("--coalesce-functions", metavar="JSON", action="append",
                         help="Explicit owner bounds and false interior starts "
                              "to merge before translation; repeatable")
+    parser.add_argument("--mmio-range", metavar="LO-HI", action="append",
+                        default=[],
+                        help="Functions starting in [LO, HI) reach hardware "
+                             "registers through MMIO_R*/MMIO_W* calls instead "
+                             "of page traps, for hosts with no page faults "
+                             "(WebAssembly). Hex, repeatable; typically the "
+                             "XDK D3D, DSOUND and XPP sections")
     parser.add_argument("--seh-prolog", metavar="ADDR",
                         help="Address of __SEH_prolog (hex). Auto-detected if omitted")
     parser.add_argument("--seh-epilog", metavar="ADDR",
@@ -350,6 +362,8 @@ def main():
             os.path.dirname(os.path.abspath(__file__)), "output",
             "icall_sites.json"),
     )
+    translator.translator.mmio_ranges = tuple(
+        _parse_range(r) for r in args.mmio_range)
 
     t_load = time.time() - t0
     print(f"Loaded {len(translator.func_db)} functions, "
