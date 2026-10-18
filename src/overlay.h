@@ -69,6 +69,9 @@ typedef struct {
 } ShooterHud;
 
 void game_set_shooter(int on, const char *primary, const char *sidearm);
+/* The mode's files, extracted from the user's own CoD4 install, are there
+ * (docs/MODS.md); without them it can't be turned on. */
+int shooter_available(void);
 void shooter_hud(ShooterHud *h);
 
 /* What the world pass draws this frame (row-major D3D matrices, row vectors). */
@@ -108,6 +111,7 @@ typedef struct {
 } SkateHud;
 
 void skate_set(int on);
+int skate_available(void);            /* Skate 3's files are there (docs/MODS.md) */
 int skate_on(void);
 int skate_live(void);
 void skate_hud(SkateHud *h);

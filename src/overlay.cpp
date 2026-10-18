@@ -266,9 +266,10 @@ static void panel_shooter(void)
         }
         if (sel[1] < 0) sel[1] = 0;
     }
-    if (!ngun) {
-        ImGui::TextWrapped("Shooter mode: no guns. Make some from your CoD4 install with "
-                           "tools/cod4_extract.py and tools/cod4_anim.py (docs/MODS.md).");
+    if (!shooter_available()) {
+        ImGui::TextDisabled("Shooter mode (CoD4): not available");
+        ImGui::TextWrapped("It needs files from your own CoD4 install: run tools/cod4_extract.py "
+                           "and tools/cod4_anim.py (docs/MODS.md).");
         return;
     }
     /* follow the game: the loadout may come from shooter.ini or RECOMP_SHOOTER */
@@ -361,6 +362,12 @@ static void shooter_overlay(void)
 static void panel_skate(void)
 {
     SkateHud h;
+    if (!skate_available()) {
+        ImGui::TextDisabled("Skate mode (Skate 3): not available");
+        ImGui::TextWrapped("It needs files from your own Skate 3 disc: run tools/skate3_anim.py "
+                           "and tools/skate3_extract.py (docs/MODS.md).");
+        return;
+    }
     skate_hud(&h);
     bool on = h.on != 0;
     if (ImGui::Checkbox("Skate mode (Skate 3 style)", &on)) {

@@ -2,6 +2,8 @@
 
 The joke-mode cheats in F1 > Cheats use models, animations, sounds and tuning from other games you own. Nothing from them is in this repo, and the folders below are gitignored: put each install or dump there yourself.
 
+Without a mode's extracted files the game is plain Sneak King: F1 > Cheats shows that mode as not available, and `RECOMP_SHOOTER`, `RECOMP_SKATE` and a saved `shooter.ini` can't turn it on. Shooter mode needs `game/mods/cod4/anims.bin` and at least one gun in `game/mods/guns/`. Skate mode needs `game/mods/skate3/anims.bin` and `board.bin`.
+
 ## Shooter mode: Call of Duty 4: Modern Warfare (PC)
 
 The King, in third person, carries two CoD4 guns and moves with CoD4's own multiplayer animations, retargeted onto him.

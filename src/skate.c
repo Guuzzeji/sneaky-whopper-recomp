@@ -192,8 +192,25 @@ int skate_live(void)
     return s_sk.on && !s_sk.walk && game_in_play() && !game_is_paused();
 }
 
+/* Skate 3's animations and board, from the user's own disc
+ * (tools/skate3_anim.py). Without them there is no skate mode: a build from
+ * source with no Skate 3 is plain Sneak King. */
+int skate_available(void)
+{
+    static int have = -1;
+    if (have < 0) {
+        have = GetFileAttributesA(SKATE_ANIM_FILE) != INVALID_FILE_ATTRIBUTES
+               && GetFileAttributesA("game/mods/skate3/board.bin") != INVALID_FILE_ATTRIBUTES;
+        if (!have)
+            fprintf(stderr, "[SKATE] no Skate 3 files (%s): skate mode is off (docs/MODS.md)\n", SKATE_ANIM_FILE);
+    }
+    return have;
+}
+
 void skate_set(int on)
 {
+    if (on && !skate_available())
+        return;
     if (on && !s_sk.on) {
         memset(&s_sk, 0, sizeof s_sk);
         s_sk.heading = -100.0f;          /* taken from the King on the first frame */

@@ -926,6 +926,32 @@ static void weapon_load(Weapon *w, const char *gun)
 /* The loadout and whether the mode is on, kept between runs. */
 #define SHOOTER_INI "shooter.ini"
 
+/* CoD4's animations and at least one gun, extracted from the user's own
+ * install (tools/cod4_extract.py, tools/cod4_anim.py). Without them there is
+ * no shooter mode: a build from source with no CoD4 is plain Sneak King. */
+int shooter_available(void)
+{
+    static int have = -1;
+    if (have < 0) {
+        WIN32_FIND_DATAA fd;
+        HANDLE f = FindFirstFileA(SHOOTER_GUN_DIR "/*", &fd);
+        char path[MAX_PATH];
+        int gun = 0;
+        if (f != INVALID_HANDLE_VALUE) {
+            do {
+                snprintf(path, sizeof path, SHOOTER_GUN_DIR "/%s/gun.obj", fd.cFileName);
+                gun |= fd.cFileName[0] != '.' && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+            } while (!gun && FindNextFileA(f, &fd));
+            FindClose(f);
+        }
+        have = gun && GetFileAttributesA(CANIM_FILE) != INVALID_FILE_ATTRIBUTES;
+        if (!have)
+            fprintf(stderr, "[SHOOTER] no CoD4 files (%s, %s): shooter mode is off (docs/MODS.md)\n",
+                    SHOOTER_GUN_DIR, CANIM_FILE);
+    }
+    return have;
+}
+
 void game_set_shooter(int on, const char *primary, const char *sidearm)
 {
     const char *gun[2] = { primary, sidearm };
@@ -945,7 +971,7 @@ void game_set_shooter(int on, const char *primary, const char *sidearm)
     }
     if (on && !s_sh.on && !canim_load(CANIM_FILE))
         fprintf(stderr, "[SHOOTER] no %s: run tools/cod4_anim.py\n", CANIM_FILE);
-    s_sh.on = on && s_sh.slot[0].w.dir[0];
+    s_sh.on = on && s_sh.slot[0].w.dir[0] && shooter_available();
     if (s_sh.on && !was)
         s_sh.pitch = 8.0f;            /* the game's resting pitch */
     if (s_sh.on)
