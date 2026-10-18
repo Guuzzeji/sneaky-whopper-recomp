@@ -3,11 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ============================================================================
 # Burger King: Sneak King - Static Recompilation
 #
-# Copy this template to your game project root and customize:
-#   1. Change the project name below
-#   2. Set XBOXRECOMP_DIR to where you cloned xboxrecomp
-#   3. Adjust source file lists as you add game-specific code
-#   4. Add any game-specific compile definitions or link libraries
+# The xboxrecomp toolkit lives in xboxrecomp/, with our patches on top.
 # ============================================================================
 
 project(sneakking_recomp C CXX)
@@ -23,15 +19,9 @@ add_compile_definitions(
 
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 #
-# Option A: xboxrecomp as a subdirectory (simplest)
-#   Place xboxrecomp/ next to your game project and use a relative path.
-#
-# Option B: find_package (if you install xboxrecomp system-wide)
-#   find_package(xboxrecomp REQUIRED)
-#
-# Adjust this path to point to your xboxrecomp clone:
-set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH
-    "Path to the xboxrecomp toolkit root directory")
+# Vendored in xboxrecomp/ (a git subtree). A plain variable, not a cache one,
+# so old build trees that cached the sibling-clone path pick this up.
+set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xboxrecomp")
 
 # Add xboxrecomp as a subdirectory -- this builds all 6 runtime libraries
 # and provides the 'xboxrecomp' umbrella target to link against.

@@ -13,7 +13,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 - **Never hand-edit `src/recomp/gen/`.** It is regenerated. Fixes go in:
   - `src/recomp_manual.c` (overrides)
   - JSON config passed to `tools.recomp` (seeds, coalesce, icall sites, trace)
-  - upstream xboxrecomp
+  - the vendored toolkit in `xboxrecomp/` (ours to patch; send generic fixes upstream)
 
 ## Layout
 | Path | What |
@@ -33,7 +33,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 | `tools/p1_survey.py` | P1 survey (gaps, data pointers, vtables, jump tables, D3D usage, threads). Writes to `analysis/p1/`. |
 | `seeds/` | Seed lists for `tools.disasm --seed-functions`. They hold addresses only. |
 | `CMakeLists.txt` | Calls `add_subdirectory(${XBOXRECOMP_DIR})` and links `xboxrecomp`. |
-| `C:\repos\xboxrecomp` | Toolkit, a sibling clone at v0.14.0. `XBOXRECOMP_DIR` defaults to `../xboxrecomp`. |
+| `xboxrecomp/` | The toolkit: upstream v0.14.0 plus our patches, vendored as a git subtree with its history. `CMakeLists.txt` points `XBOXRECOMP_DIR` here. Edit it like any other code in this repo. |
 
 ## XBE facts
 - **Identity:** retail build, title ID `0x4D5300D3`, NA region. SHA-1 `0B174AD67451D29FDC39DA1A5E6DBA35FF0F0C13`.
@@ -58,10 +58,10 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 - **Compiler:** MSVC, from VS 2022 Community at `C:\Program Files\Microsoft Visual Studio\2022\Community`. Plain shells don't have `cl`/`ninja` on PATH. Wrap commands:
   `cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul && <command>'`
 - **Python:** use `C:\repos\sneak-king-recomp\.venv\Scripts\python.exe` (packages: capstone, pytest, pefile, numpy). The system Python is uv-managed, so `pip install` is blocked.
-- **Running toolkit tools:** run `tools.*` with the toolkit as the working directory (`C:\repos\xboxrecomp`). Set `PYTHONIOENCODING=utf-8` so report printing doesn't crash.
+- **Running toolkit tools:** run `tools.*` with the toolkit as the working directory (`C:\repos\sneak-king-recomp\xboxrecomp`). Set `PYTHONIOENCODING=utf-8` so report printing doesn't crash.
 - **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921\ghidra_12.1.4_PUBLIC` (note the nested folder). ghidra-mcp is also available.
   - Ghidra 12 has no Jython. Run the toolkit's `.py` Ghidra scripts under PyGhidra, which is installed in the venv, with `@runtime PyGhidra`. The command is in `docs/P1_FINDINGS.md`.
-  - The analyzed project is in `C:\repos\xboxrecomp\tools\ghidra_naming\work\`. That repo's `.git/info/exclude` keeps it out of git.
+  - The analyzed project is in `xboxrecomp\tools\ghidra_naming\work\`. The toolkit's `.gitignore` keeps it out of git.
 - **XbSymbolDatabase:** run the CLI as `toolkit\xbsymbol\win_x64\bin\XbSymbolDatabaseCLI.exe <xbe> -e`.
 - **REA: always use it** (the `mcp__rea__*` tools) for reverse-engineering questions: decompiling, reading a function's assembly, xrefs, callers/callees, strings, and checking a lifted function against the original. Prefer it over raw capstone dumps or grepping `analysis/disasm/asm`.
   - Use it on the reference games too when writing the joke modes: open `mw1/iw3sp.exe` (a plain PE) to learn how CoD4's weapons work (WeaponDef fields, spread, recoil, ADS, fastfiles). REA rejects the Skate 3 XEX (PowerPC): convert it with `tools/xex_to_pe.py` and query headless Ghidra with `tools/skate3_ghidra.py` (`docs/SKATE3_NOTES.md`). Follow the original's logic; record findings in docs, never copy its code.
@@ -69,11 +69,11 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
   - The provider is Ghidra 12.1.4. The first query waits for auto-analysis to finish, which takes a few minutes.
   - The session database is temporary. Names and comments set through REA are lost when it closes, so put lasting names in `analysis/names_combined.json` instead.
 - **xemu:** the reference emulator, at `toolkit\xemu\xemu.exe` (gitignored). The `config\` folder holds the user's BIOS, MCPX and HDD image. Settings live in `%APPDATA%\xemu\xemu\xemu.toml`, which uses absolute paths, so update it whenever the folder moves.
-- **Known environment issue:** this machine blocks executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (805 passed, 7 skipped):
-  `cmd /c 'set TMP=C:\repos\xboxrecomp\build\conftmp&& set TEMP=C:\repos\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd /d C:\repos\xboxrecomp && <venv python> -m pytest tools/ -q'`
+- **Known environment issue:** this machine blocks executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (825 passed, 7 skipped):
+  `cmd /c 'set TMP=C:\repos\sneak-king-recomp\xboxrecomp\build\conftmp&& set TEMP=C:\repos\sneak-king-recomp\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd /d C:\repos\sneak-king-recomp\xboxrecomp && <venv python> -m pytest tools/ -q'`
 
 ## Pipeline commands
-Run these from `C:\repos\xboxrecomp`, with `$py` set to the venv Python, `$x` to `C:\repos\sneak-king-recomp\game\default.xbe` and `$a` to `C:\repos\sneak-king-recomp\analysis`.
+Run these from `C:\repos\sneak-king-recomp\xboxrecomp`, with `$py` set to the venv Python, `$x` to `C:\repos\sneak-king-recomp\game\default.xbe` and `$a` to `C:\repos\sneak-king-recomp\analysis`.
 
 ```powershell
 & $py -m tools.xiso unpack <iso> -o C:\repos\sneak-king-recomp\game
@@ -126,7 +126,7 @@ Other useful switches:
 - `RECOMP_WARP=<slot>`: warp to level slot (0 sawmill, 1 suburbia, 2 construction, 3 urban) two seconds into play, for testing.
 - `RECOMP_HD_TEX=<dir>`: replace textures with `<dir>/<hash>.dds` (360 HD textures from `tools/xen_tex.py <pkg.xbp> <pkg.xen> -o game/hd`). On by default with `game/hd`; `=0` keeps the Xbox textures.
 
-The toolkit needs local patches that are not upstream yet. They are on the xboxrecomp branch `sneak-king-p3-boot`, stacked on `lifter-cpu-probe`: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster, plus the P7 fixes: `mkb_input.c` bindings from the ini (`bind.<PAD>=...`), held mouse buttons, generic Shift/Ctrl, and poll-rate-independent mouse aim, and `xbox_FramebufferWindowHwnd` / `xbox_FramebufferWindowExternalPresent` so a back end can present into the framebuffer window, plus the D3D9 fix: `tools.recomp --exclude-manual` can be given more than once, plus the P8 additions: `mkb_take_mouse_delta`, `mkb_set_suspended` and `mkb_set_menu_cursor` in `mkb_input.c`, and `xbox_FramebufferWindowSetMsgHook` in `fb_present.c`, plus the P9 additions: `mkb_mouse_buttons` and `mkb_set_mute` in `mkb_input.c`.
+The toolkit in `xboxrecomp/` carries local patches that are not upstream: the cpuid/pushfd lifter fix (P2), plus the contiguous-arena top-down fallback, `nv2a_pb_set_semaphore_device_ptr` and the APU EP heartbeat (P3), plus the P4 fixes: read-only D:, guest APCs (`NtQueueApcThread`, queued I/O completion), the QPC vblank tick and IRQ hold, and the fixed-function transform of inline arrays with integer depth, plus the P5 fixes: the per-kick `DMA_PUT` trace gated on `RECOMP_NV2A_TRACE`, and for render back ends, `clip_x`, `clip_y` and `format` in `Nv2aSurface`, `palette` in `Nv2aTexture`, and `flip()` called before the window copies the frame, plus the P5.4 fix: `Nv2aBatch.rc`, which passes the register-combiner program to render back ends, plus the P6 fix: `Nv2aBatch.stages` and `fog_color` and `Nv2aVertex` `specular`, `fog` and `tc`, which pass every texture stage the combiners read, plus `Nv2aRenderState.zeta_format` and `Nv2aBatch.clip_plane_mode`, per-vertex transform failure, and one shared worker pool for transform and raster, plus the P7 fixes: `mkb_input.c` bindings from the ini (`bind.<PAD>=...`), held mouse buttons, generic Shift/Ctrl, and poll-rate-independent mouse aim, and `xbox_FramebufferWindowHwnd` / `xbox_FramebufferWindowExternalPresent` so a back end can present into the framebuffer window, plus the D3D9 fix: `tools.recomp --exclude-manual` can be given more than once, plus the P8 additions: `mkb_take_mouse_delta`, `mkb_set_suspended` and `mkb_set_menu_cursor` in `mkb_input.c`, and `xbox_FramebufferWindowSetMsgHook` in `fb_present.c`, plus the P9 additions: `mkb_mouse_buttons` and `mkb_set_mute` in `mkb_input.c`.
 
 ## Debug loop (P3+)
 - **Indirect calls:**
@@ -144,4 +144,4 @@ The toolkit needs local patches that are not upstream yet. They are on the xboxr
   - RenderDoc and PIX don't capture D3D9. Run the exe with DXVK's `d3d9.dll` beside it (D3D9 on Vulkan) and capture that, or use `RECOMP_D3D_TRACE`.
   - Reference frames from the old D3D11 path are in `analysis/golden_d3d11/`. `tools/bmp2png.py` converts dumps for viewing.
   - Use REA to decompile and inspect the original function. Use Ghidra headless (`ghidra_naming`) for bulk naming.
-- **Upstream fixes:** keep toolkit fixes small, and send them upstream to xboxrecomp when they are generic.
+- **Upstream fixes:** keep toolkit fixes small, and send them upstream to xboxrecomp when they are generic. Commit toolkit changes apart from game changes: `git subtree split --prefix=xboxrecomp -b <branch>` then gives a branch to send upstream, and `git subtree pull --prefix=xboxrecomp https://github.com/sp00nznet/xboxrecomp main` takes in new upstream releases.

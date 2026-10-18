@@ -13,7 +13,7 @@ Rules for every phase:
 - [x] Make the repo a git repository. Add a `.gitignore` that excludes all game data, analysis dumps and generated C.
 - [x] Install Visual Studio 2022 Community with the C++ workload. It includes MSVC, the Windows SDK, CMake and Ninja.
 - [x] Create a Python `.venv` with capstone, pytest, pefile and numpy. The system Python is uv-managed, so pip cannot install into it.
-- [x] Clone xboxrecomp to `C:\repos\xboxrecomp` (v0.14.0, `eb0aa1d`).
+- [x] Clone xboxrecomp (v0.14.0, `eb0aa1d`). Since vendored as `xboxrecomp/`.
 - [x] Run the toolkit test suite: 805 passed, 7 skipped. It needs TEMP redirected, as described in CLAUDE.md.
 - [x] Build the toolkit runtime libraries in Release.
 - [x] Extract the game partition to `game/` (143 files, 1.55 GB).
