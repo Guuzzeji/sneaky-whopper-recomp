@@ -1901,19 +1901,24 @@ static void present(uint32_t data)
         s_st.vdecls = (unsigned)s_nprog; s_st.vdecls_max = MAX_PROG;
         s_st.scale = s_scale; s_st.sc_w = (unsigned)ww; s_st.sc_h = (unsigned)wh; s_st.frame = s_frame;
         s_st.hd_textures = s_hd_hits;
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
         {
             /* The pointer over the game's menus, in guest 640x480. */
+            int gx = -1, gy = -1;
+#if defined(__EMSCRIPTEN__)
+            extern void web_pointer(int *gx, int *gy);
+            web_pointer(&gx, &gy);          /* the page's canvas is the picture */
+#else
             HWND hwnd = (HWND)xbox_FramebufferWindowHwnd();
             POINT pt;
-            int gx = -1, gy = -1;
             if (GetForegroundWindow() == hwnd && GetCursorPos(&pt) && ScreenToClient(hwnd, &pt)
                 && pt.x >= fx && pt.x < fx + fw && pt.y >= fy && pt.y < fy + fh) {
                 gx = (pt.x - fx) * 640 / fw;
                 gy = (pt.y - fy) * 480 / fh;
-                if (game_widescreen())    /* the menus are squeezed to the middle 3/4 */
-                    gx = 320 + (gx - 320) * 4 / 3;
             }
+#endif
+            if (gx >= 0 && game_widescreen())   /* the menus are squeezed to the middle 3/4 */
+                gx = 320 + (gx - 320) * 4 / 3;
             /* As d3d9_hle.c: no hover while the King is in play. */
             {
                 int play = game_in_play();

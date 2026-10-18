@@ -62,7 +62,7 @@ await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: t
 await send('Page.navigate', { url });
 
 const presses = keys.map((k) => { const [key, at] = k.split('@'); return { key, at: +at }; });
-const vk = { KeyZ: 90, KeyX: 88, Enter: 13, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Space: 32, KeyW: 87 };
+const vk = { KeyZ: 90, KeyX: 88, KeyP: 80, KeyQ: 81, KeyE: 69, Escape: 27, Enter: 13, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Space: 32, KeyW: 87 };
 let shot = 0;
 for (let s = 1; s <= +secs; s++) {
   await sleep(1000);

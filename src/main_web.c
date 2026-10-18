@@ -140,7 +140,8 @@ int main(void)
     env_default_on("RECOMP_USB");
     env_default_on("RECOMP_KEYBOARD");
     /* The 360's HD textures, as natively (main.c); ?RECOMP_HD_TEX=0 keeps
-     * the Xbox's. Widescreen stays off: the page's canvas is 4:3. */
+     * the Xbox's. RECOMP_WIDESCREEN comes from the page, which sizes its
+     * canvas to match (index.html). */
     if (!getenv("RECOMP_HD_TEX"))
         setenv("RECOMP_HD_TEX", "/game/hd", 1);
     else if (!strcmp(getenv("RECOMP_HD_TEX"), "0"))

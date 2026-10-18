@@ -53,7 +53,7 @@ The CMake option `RECOMP_RENDERER` (`d3d9` or `gl`) picks the renderer. The pres
 |---|---|---|
 | Entry point | `src/main.c` (`WinMain`) | `src/main_web.c` (`main` on a pthread, `-sPROXY_TO_PTHREAD`) |
 | Window | toolkit `fb_present.c`, a Win32 window | a `<canvas>`. Frames go to the page as ImageBitmaps. |
-| Input | raw input, `mkb.ini` bindings (`mkb_input.c`) | DOM key and pointer-lock events (`src/web_host.c`) into the keyboard pad |
+| Input | raw input, `mkb.ini` bindings (`mkb_input.c`) | DOM key, mouse and pointer-lock events (`src/web_host.c`), with `mkb.ini`'s bindings, into the keyboard pad |
 | Game files | read from `game/` | fetched from `game/` over HTTP range requests, file by file (WasmFS) |
 | Memory | identity layout, with page traps for registers | compact layout (`XBOX_COMPACT_MEM`), explicit MMIO only |
 | Debug UI | F1 overlay (Dear ImGui) | the log under the picture and the cheat buttons |
@@ -154,7 +154,7 @@ You must be on the `web-port-experimental` branch.
 
 **Do not host the web build publicly.** The `.wasm` file contains the lifted game code, and `game/` is your disc.
 
-Web controls (the toolkit's keyboard pad, not `mkb.ini`): Enter is START, Z is A, X is B, C is X, V is Y, WASD moves, the arrows are the d-pad and IJKL are the right stick. Clicking the picture captures the mouse for the camera (Escape releases it). The cheat buttons are under the picture. Switches go in the query string, for example `http://localhost:8080/?RECOMP_SCALE=1&RECOMP_D3D9_STATS=1`. `?RECOMP_HD_TEX=0` turns off the HD textures.
+Web controls are the native ones from `mkb.ini` (the bindings are copied into `src/web_host.c`, so editing `mkb.ini` does not change them): WASD moves, the mouse turns the camera, Shift runs, left click or Space is A, right click or Q is B, E is Y, F is first person, the wheel or Z zooms, Escape or P pauses, and the arrows and Enter work the menus. In menus the pointer is free and points at options. In play the mouse locks at your next key press or click; Escape frees it and a click takes it back. The cheat buttons are under the picture. Switches go in the query string, for example `http://localhost:8080/?RECOMP_SCALE=1&RECOMP_D3D9_STATS=1`. `?RECOMP_HD_TEX=0` turns off the HD textures. Widescreen (16:9, anamorphic, as natively) is on: the page sizes its canvas to match, and `?RECOMP_WIDESCREEN=0` gives 4:3. The Hide log button under the picture hides the log panel, and the browser remembers the choice.
 
 To test without a person at the keyboard, `node tools/web_drive.mjs <url> <secs> <outdir> [Key@sec ...]` drives headless Chrome. It saves the console, screenshots and every thread's stack.
 

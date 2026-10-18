@@ -220,7 +220,7 @@ Query-string switches become the environment, for example `?RECOMP_D3D9_STATS=1`
 
 **Browser host (W3):**
 - `src/main_web.c` handles boot and mounts `game/` through the WasmFS fetch backend from a manifest. Files are read lazily with HTTP range requests.
-- `src/web_host.c` handles keyboard (the toolkit keyboard pad: Enter START, Z A, X B, arrows or WASD) and the mouse camera with pointer lock.
+- `src/web_host.c` maps the native `mkb.ini` layout (keys, mouse buttons, wheel) onto the toolkit keyboard pad, points at menu options with the free pointer, and locks the pointer for the mouse camera in play.
 - The toolkit's `apu_web.c` plays audio: a ring in shared memory drained by a ScriptProcessorNode.
 - `-sPROXY_TO_PTHREAD`, 32-worker pool, 1.5 GB fixed memory, OffscreenCanvas.
 - **Frames:** an OffscreenCanvas in a worker that never yields never shows its frames, and Chrome has no `commit()`. Each present therefore sends `transferToImageBitmap()` over a BroadcastChannel to a `bitmaprenderer` canvas on the page.

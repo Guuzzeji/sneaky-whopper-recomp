@@ -16,6 +16,9 @@
   #cheats button { font: inherit; background: #222; color: var(--fg); border: 1px solid #444;
                    border-radius: 4px; padding: 3px 8px; cursor: pointer; }
   #cheats button:hover { background: #333; }
+  #bar button { font: inherit; background: none; color: var(--dim); border: 1px solid #444;
+                border-radius: 4px; padding: 0 6px; cursor: pointer; margin-left: auto; }
+  body.nolog #log { display: none; }
   #log { height: 9em; overflow: auto; margin: 0; padding: 6px 12px; background: #000;
          color: #9c9; font: 11px/1.3 ui-monospace, monospace; white-space: pre-wrap; }
 </style>
@@ -26,11 +29,12 @@
     <!-- The game renders into #canvas from a worker; frames come back as
          ImageBitmaps and are shown on #screen (gl_hle.c swap_window). -->
     <canvas id="canvas" width="1280" height="960" hidden></canvas>
-    <canvas id="screen" width="1280" height="960" tabindex="0"></canvas>
+    <canvas id="screen" width="1280" height="960" tabindex="0" oncontextmenu="return false"></canvas>
   </div>
   <div id="bar">
     <span id="status">Loading...</span>
-    <span>Enter: START · Z: A · X: B · WASD: move · arrows: d-pad · click the picture for the mouse camera, Esc to release</span>
+    <span>WASD move · mouse camera · Shift run · click/Space A · right click/Q B · E Y · F first person · wheel/Z zoom · Esc/P pause · arrows + Enter menus · the mouse locks in play (Esc frees it, click takes it back)</span>
+    <button id="logbtn">Hide log</button>
   </div>
   <!-- Cheats, as in the native F1 overlay. Each one runs on the game thread
        at the next frame (web_host.c web_cheat). Warp works only in play. -->
@@ -58,6 +62,24 @@
     logEl.textContent = lines.join('\n');
     logEl.scrollTop = logEl.scrollHeight;
   }
+  // Widescreen (16:9, anamorphic, as natively) unless ?RECOMP_WIDESCREEN=0.
+  // Both canvases take the shape before the game takes #canvas over.
+  const wide = params.get('RECOMP_WIDESCREEN') !== '0';
+  for (const c of document.querySelectorAll('canvas')) {
+    c.height = wide ? 720 : 960;
+    c.style.aspectRatio = wide ? '16 / 9' : '4 / 3';
+  }
+  // The log can be hidden; the choice is remembered in this browser.
+  const logBtn = document.getElementById('logbtn');
+  function showLog(on) {
+    document.body.classList.toggle('nolog', !on);
+    logBtn.textContent = on ? 'Hide log' : 'Show log';
+    try { localStorage.setItem('sk-log', on ? '1' : '0'); } catch {}
+  }
+  let logOn = true;
+  try { logOn = localStorage.getItem('sk-log') !== '0'; } catch {}
+  showLog(logOn);
+  logBtn.onclick = () => { showLog(document.body.classList.contains('nolog')); logBtn.blur(); };
   if (!crossOriginIsolated)
     log('Not cross-origin isolated: serve this folder with tools/serve.py (COOP/COEP).');
   const screen = document.getElementById('screen').getContext('bitmaprenderer');
@@ -66,7 +88,7 @@
     canvas: document.getElementById('canvas'),
     print: (t) => { console.log(t); log(t); },
     printErr: (t) => { console.warn(t); log(t); },
-    preRun: [() => { for (const [k, v] of params) ENV[k] = v; }],
+    preRun: [() => { ENV.RECOMP_WIDESCREEN = wide ? '1' : '0'; for (const [k, v] of params) ENV[k] = v; }],
     onRuntimeInitialized: () => { document.getElementById('status').textContent = 'Running'; },
   };
 </script>
