@@ -700,10 +700,31 @@ static IDirect3DBaseTexture9 *tex_create(const XFmt *f, uint32_t data, uint32_t 
  * 360 packages). The hash is the one tex_get keys the cache on, so a texture
  * is replaced exactly when its guest bytes match. Coordinates of swizzled
  * and DXT textures are normalized, so a bigger texture needs nothing else. */
+IDirect3DTexture9 *d3d9_dds_load(const char *path);
+
 static IDirect3DBaseTexture9 *hd_load(uint32_t hash)
 {
     static const char *dir = (const char *)-1;
     char path[MAX_PATH];
+    IDirect3DTexture9 *t;
+
+    if (dir == (const char *)-1)
+        dir = getenv("RECOMP_HD_TEX");
+    if (!dir || !*dir)
+        return NULL;
+    snprintf(path, sizeof path, "%s/%08x.dds", dir, hash);
+    t = d3d9_dds_load(path);
+    if (t && s_hd_hits++ < 8) {
+        D3DSURFACE_DESC d;
+        IDirect3DTexture9_GetLevelDesc(t, 0, &d);
+        fprintf(stderr, "[HD] %08x -> %ux%u\n", hash, d.Width, d.Height);
+    }
+    return (IDirect3DBaseTexture9 *)t;
+}
+
+/* A DXT1/3/5 .dds file as a managed texture, or NULL. */
+IDirect3DTexture9 *d3d9_dds_load(const char *path)
+{
     uint8_t hdr[128], *buf = NULL;
     IDirect3DTexture9 *t = NULL;
     uint32_t w, h, mips, fourcc, bpb, lv, off = 0;
@@ -711,11 +732,6 @@ static IDirect3DBaseTexture9 *hd_load(uint32_t hash)
     D3DFORMAT fmt;
     FILE *f;
 
-    if (dir == (const char *)-1)
-        dir = getenv("RECOMP_HD_TEX");
-    if (!dir || !*dir)
-        return NULL;
-    snprintf(path, sizeof path, "%s/%08x.dds", dir, hash);
     f = fopen(path, "rb");
     if (!f)
         return NULL;
@@ -750,12 +766,10 @@ static IDirect3DBaseTexture9 *hd_load(uint32_t hash)
         }
         off += row * rows;
     }
-    if (s_hd_hits++ < 8)
-        fprintf(stderr, "[HD] %08x -> %ux%u\n", hash, w, h);
 done:
     free(buf);
     fclose(f);
-    return (IDirect3DBaseTexture9 *)t;
+    return t;
 }
 
 /* The host texture for a guest texture (and palette), uploaded or refreshed
@@ -1777,6 +1791,17 @@ static void present(uint32_t data)
         }
     }
     IDirect3DDevice9_EndScene(s_dev);
+    /* Shooter mode: the gun, flashes and tracers, into the buffer being
+     * presented (the guest may already be drawing the next), against the
+     * scene's depth. */
+    if (r && r->surf && s_cur_ds && s_cur_ds->surf) {
+        D3DVIEWPORT9 vp = { 0, 0, r->w * s_scale, r->h * s_scale, 0.0f, 1.0f };
+        IDirect3DDevice9_SetRenderTarget(s_dev, 0, r->surf);
+        IDirect3DDevice9_SetDepthStencilSurface(s_dev, s_cur_ds->surf);
+        IDirect3DDevice9_SetViewport(s_dev, &vp);
+        gun_world_flush(s_dev);
+        IDirect3DDevice9_SetRenderTarget(s_dev, 0, s_cur_rt && s_cur_rt->surf ? s_cur_rt->surf : r->surf);
+    }
     if (r && r->surf)
         dump_bmp(r);
     if (r && r->surf && hwnd && sc_ready(hwnd)

@@ -53,6 +53,11 @@ set(GAME_SOURCES
     src/main.c
     src/recomp_manual.c
     src/d3d9_hle.c
+    # Shooter mode (P9): CoD4 animations, the gun and its effects, its sounds.
+    src/cod4_anim.c
+    src/mods_mesh.c
+    src/skate.c
+    src/cod4_sound.c
     # The F1/F2 debug overlay, on the vendored Dear ImGui.
     src/overlay.cpp
     third_party/imgui/imgui.cpp
@@ -102,6 +107,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     d3dcompiler
     # overlay.cpp: the thread table and working set.
     psapi
+    # cod4_sound.c: the shooter's gun sounds.
+    xaudio2_8
+    ole32
 )
 
 # MSVC-specific: large address aware, increase section limit for big generated files

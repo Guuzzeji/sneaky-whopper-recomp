@@ -618,6 +618,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* 16:9: hor+ 3D, the HUD kept 4:3 (recomp_manual.c). =0 for 4:3. */
     env_default_on("RECOMP_WIDESCREEN");
 
+    /* The 360's HD textures, where tools/xen_tex.py put them (game\hd);
+     * textures without one keep the Xbox's. =0 for the originals. */
+    if (!getenv("RECOMP_HD_TEX"))
+        _putenv("RECOMP_HD_TEX=game/hd");
+    else if (strcmp(getenv("RECOMP_HD_TEX"), "0") == 0)
+        _putenv("RECOMP_HD_TEX=");
+
     /* The controllers. XAPI is linked into the image and drives the MCPX
      * OHCI registers itself, so the pad only exists if the toolkit's OHCI
      * model is up -- and nothing in the toolkit brings it up but the title.

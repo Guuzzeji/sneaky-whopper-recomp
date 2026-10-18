@@ -11,6 +11,7 @@
 #include <d3d9.h>
 #include <tlhelp32.h>
 #include <psapi.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <algorithm>
@@ -236,6 +237,216 @@ static void panel_health(const OverlayGameInfo &gi)
     }
 }
 
+/* Shooter mode: the guns are the folders tools/cod4_extract.py made; the
+ * loadout is a primary and a sidearm (1 / 2 switch in game). */
+static void panel_shooter(void)
+{
+    static char guns[64][64];
+    static int ngun = -1, sel[2] = { 0, -1 };
+    static bool on;
+    ShooterHud h;
+
+    if (ngun < 0) {
+        WIN32_FIND_DATAA fd;
+        HANDLE f = FindFirstFileA(SHOOTER_GUN_DIR "/*", &fd);
+        ngun = 0;
+        if (f != INVALID_HANDLE_VALUE) {
+            do {
+                if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.'
+                    && ngun < 64)
+                    snprintf(guns[ngun++], sizeof guns[0], "%s", fd.cFileName);
+            } while (FindNextFileA(f, &fd));
+            FindClose(f);
+        }
+        /* a sensible start: an AK and a pistol if they were extracted */
+        for (int i = 0; i < ngun; i++) {
+            if (!strcmp(guns[i], "ak47_mp")) sel[0] = i;
+            if (sel[1] < 0 && (!strcmp(guns[i], "deserteagle_mp") || !strcmp(guns[i], "beretta_mp")))
+                sel[1] = i;
+        }
+        if (sel[1] < 0) sel[1] = 0;
+    }
+    if (!ngun) {
+        ImGui::TextWrapped("Shooter mode: no guns. Make some from your CoD4 install with "
+                           "tools/cod4_extract.py and tools/cod4_anim.py (docs/MODS.md).");
+        return;
+    }
+    /* follow the game: the loadout may come from shooter.ini or RECOMP_SHOOTER */
+    shooter_hud(&h);
+    on = h.on != 0;
+    for (int i = 0; i < ngun; i++) {
+        if (!strcmp(guns[i], h.primary)) sel[0] = i;
+        if (!strcmp(guns[i], h.sidearm)) sel[1] = i;
+    }
+    auto names = [](void *, int i, const char **out) { *out = guns[i]; return true; };
+    bool changed = ImGui::Checkbox("Shooter mode (CoD4, third person)", &on);
+    changed |= ImGui::Combo("Primary", &sel[0], names, NULL, ngun);
+    changed |= ImGui::Combo("Sidearm", &sel[1], names, NULL, ngun);
+    if (changed)
+        game_set_shooter(on, guns[sel[0]], guns[sel[1]]);
+    shooter_hud(&h);
+    if (h.on)
+        ImGui::TextWrapped("WASD moves (he keeps facing the aim), Shift sprints, C crouches (Ctrl holds it). "
+                           "Left click fires, right click aims down the sights, R reloads, 1 / 2 switch guns. "
+                           "Citizens knocked out: %d", h.knockouts);
+}
+
+/* CoD4's HUD: a crosshair whose gap is the spread cone, a hit marker, and
+ * the gun's name over its ammo in the corner. */
+static void shooter_overlay(void)
+{
+    ShooterHud h;
+    shooter_hud(&h);
+    if (!h.live)
+        return;
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImVec2 sz = ImGui::GetIO().DisplaySize, c(sz.x * 0.5f, sz.y * 0.5f);
+    float fov = h.fov > 1.0f ? h.fov : 65.0f;
+    /* pixels per unit of tan(angle): the picture's height covers the 4:3 FOV */
+    float k = sz.y * 0.5f * (4.0f / 3.0f) / tanf(fov * 0.5f * 0.0174533f);
+    float gap = std::max(5.0f, k * tanf(h.spread * 0.5f * 0.0174533f)), len = 10.0f;
+    float vis = (1.0f - h.ads) * (1.0f - h.sprint);
+    ImU32 white = IM_COL32(255, 255, 255, (int)(230 * vis)), shade = IM_COL32(0, 0, 0, (int)(120 * vis));
+    if (vis > 0.05f) {
+        for (int pass = 0; pass < 2; pass++) {
+            ImU32 col = pass ? white : shade;
+            float o = pass ? 0.0f : 1.0f, t = pass ? 2.0f : 4.0f;
+            dl->AddLine(ImVec2(c.x - gap - len + o, c.y + o), ImVec2(c.x - gap + o, c.y + o), col, t);
+            dl->AddLine(ImVec2(c.x + gap + o, c.y + o), ImVec2(c.x + gap + len + o, c.y + o), col, t);
+            dl->AddLine(ImVec2(c.x + o, c.y - gap - len + o), ImVec2(c.x + o, c.y - gap + o), col, t);
+            dl->AddLine(ImVec2(c.x + o, c.y + gap + o), ImVec2(c.x + o, c.y + gap + len + o), col, t);
+        }
+    }
+    if (h.ads > 0.5f)
+        dl->AddCircleFilled(c, 2.5f, IM_COL32(255, 60, 40, (int)(255 * h.ads)));
+    if (h.hit > 0.0f) {
+        ImU32 hc = IM_COL32(255, 255, 255, (int)(255 * std::min(1.0f, h.hit * 5.0f)));
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                dl->AddLine(ImVec2(c.x + sx * 7.0f, c.y + sy * 7.0f),
+                            ImVec2(c.x + sx * 15.0f, c.y + sy * 15.0f), hc, 2.5f);
+    }
+    if (h.reload > 0.0f) {            /* under the crosshair: what the reload has left to go */
+        float w = 90.0f, y = c.y + 38.0f, fsr = ImGui::GetFontSize();
+        ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fsr, FLT_MAX, 0.0f, "RELOADING");
+        dl->AddText(ImGui::GetFont(), fsr, ImVec2(c.x - ts.x * 0.5f + 1, y + 1), IM_COL32(0, 0, 0, 170), "RELOADING");
+        dl->AddText(ImGui::GetFont(), fsr, ImVec2(c.x - ts.x * 0.5f, y), IM_COL32(255, 210, 90, 235), "RELOADING");
+        y += ts.y + 3.0f;
+        dl->AddRectFilled(ImVec2(c.x - w * 0.5f, y), ImVec2(c.x + w * 0.5f, y + 4.0f), IM_COL32(0, 0, 0, 140), 2.0f);
+        dl->AddRectFilled(ImVec2(c.x - w * 0.5f, y), ImVec2(c.x - w * 0.5f + w * std::min(1.0f, h.reload), y + 4.0f),
+                          IM_COL32(255, 210, 90, 220), 2.0f);
+    }
+    char ammo[32];
+    snprintf(ammo, sizeof ammo, "%d", h.ammo);
+    float fs = ImGui::GetFontSize() * 2.2f, fsn = ImGui::GetFontSize() * 1.3f;
+    ImVec2 as = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, ammo);
+    ImVec2 ns = ImGui::GetFont()->CalcTextSizeA(fsn, FLT_MAX, 0.0f, h.name);
+    ImVec2 at(sz.x - as.x - 48.0f, sz.y - as.y - 48.0f), nt(sz.x - ns.x - 48.0f, at.y - ns.y - 4.0f);
+    ImU32 acol = h.reload > 0.0f ? IM_COL32(255, 210, 90, 255)
+               : h.ammo * 4 <= h.clip ? IM_COL32(255, 80, 60, 255) : IM_COL32(255, 255, 255, 235);
+    dl->AddText(ImGui::GetFont(), fsn, ImVec2(nt.x + 2, nt.y + 2), IM_COL32(0, 0, 0, 170), h.name);
+    dl->AddText(ImGui::GetFont(), fsn, nt, IM_COL32(220, 220, 220, 235), h.name);
+    dl->AddText(ImGui::GetFont(), fs, ImVec2(at.x + 2, at.y + 2), IM_COL32(0, 0, 0, 170), ammo);
+    dl->AddText(ImGui::GetFont(), fs, at, acol, ammo);
+    /* the clip as a row of rounds, CoD4 style, under the count */
+    int n = std::min(h.clip, 60);
+    float bw = 3.0f, gapx = 2.0f, x0 = sz.x - 48.0f - n * (bw + gapx), y0 = sz.y - 40.0f;
+    for (int i = 0; i < n; i++)
+        dl->AddRectFilled(ImVec2(x0 + i * (bw + gapx), y0), ImVec2(x0 + i * (bw + gapx) + bw, y0 + 9.0f),
+                          i < n - h.ammo * n / std::max(1, h.clip) ? IM_COL32(90, 90, 90, 160)
+                                                                   : IM_COL32(235, 235, 235, 220));
+}
+
+/* Skate mode (skate.c): Skate 3's flick-it on the mouse. */
+static void panel_skate(void)
+{
+    SkateHud h;
+    skate_hud(&h);
+    bool on = h.on != 0;
+    if (ImGui::Checkbox("Skate mode (Skate 3 style)", &on)) {
+        if (on)
+            game_set_shooter(0, NULL, NULL);
+        skate_set(on);
+    }
+    if (!h.on)
+        return;
+    ImGui::Text("%s. Score %d, tricks %d.", h.walk ? "On foot, board in hand (G to ride)" : "Riding (G to walk)",
+                h.score, h.tricks);
+    ImGui::TextWrapped("W pushes, S brakes, A / D steer, the mouse looks around, Space ollies, G steps off or back on.");
+    ImGui::TextWrapped("Tricks: jump (Space, or off a ledge), then flick the mouse quickly in one direction, early "
+                       "enough for the board to come round.\n"
+                       "  up: Ollie          up-left: Kickflip        up-right: Heelflip\n"
+                       "  left: BS Shove-it  right: FS Shove-it\n"
+                       "  down-left: Varial Kickflip  down-right: Varial Heelflip  down: 360 Flip\n"
+                       "Hold Shift for the nollie versions of up, up-left and up-right.");
+    ImGui::TextWrapped("Hold the left button for a manual (right: nose manual) and balance it with W / S. In "
+                       "the air the buttons grab (left Melon, right Method, both Mute). Tricks in a row make a "
+                       "line, banked after a second on plain wheels. Landing before a flip has come round is a "
+                       "bail.");
+}
+
+/* Skate's HUD: the trick and its points as it lands, the score, the speed,
+ * and where the flick-it stick is. */
+static void skate_overlay(void)
+{
+    SkateHud h;
+    skate_hud(&h);
+    if (!h.live)
+        return;
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImVec2 sz = ImGui::GetIO().DisplaySize;
+    ImFont *font = ImGui::GetFont();
+    float fs = ImGui::GetFontSize();
+    if (h.show_t > 0.0f && h.shown[0]) {
+        float big = fs * 2.6f, a = std::min(1.0f, h.show_t * 2.0f);
+        ImVec2 ts = font->CalcTextSizeA(big, FLT_MAX, 0.0f, h.shown);
+        ImVec2 at(sz.x * 0.5f - ts.x * 0.5f, sz.y * 0.16f - (2.0f - h.show_t) * 10.0f);
+        ImU32 col = h.bail ? IM_COL32(255, 70, 50, (int)(255 * a)) : IM_COL32(255, 230, 80, (int)(255 * a));
+        dl->AddText(font, big, ImVec2(at.x + 3, at.y + 3), IM_COL32(0, 0, 0, (int)(180 * a)), h.shown);
+        dl->AddText(font, big, at, col, h.shown);
+    }
+    if (h.combo_n > 0) {              /* the line being built: its tricks and what it's worth */
+        char cl[96];
+        float mid = fs * 1.4f;
+        snprintf(cl, sizeof cl, "%d x %d", h.combo_pts, h.combo_n);
+        ImVec2 cs = font->CalcTextSizeA(mid * 1.3f, FLT_MAX, 0.0f, cl);
+        ImVec2 cp(sz.x * 0.5f - cs.x * 0.5f, sz.y * 0.16f + fs * 3.2f);
+        dl->AddText(font, mid * 1.3f, ImVec2(cp.x + 2, cp.y + 2), IM_COL32(0, 0, 0, 170), cl);
+        dl->AddText(font, mid * 1.3f, cp, IM_COL32(120, 230, 255, 235), cl);
+        ImVec2 ls = font->CalcTextSizeA(mid, FLT_MAX, 0.0f, h.combo_line);
+        ImVec2 lp(sz.x * 0.5f - ls.x * 0.5f, cp.y + cs.y + 2.0f);
+        dl->AddText(font, mid, ImVec2(lp.x + 2, lp.y + 2), IM_COL32(0, 0, 0, 170), h.combo_line);
+        dl->AddText(font, mid, lp, IM_COL32(235, 235, 235, 220), h.combo_line);
+    }
+    char line[64];
+    snprintf(line, sizeof line, "%d", h.score);
+    float mid = fs * 2.0f;
+    ImVec2 ss = font->CalcTextSizeA(mid, FLT_MAX, 0.0f, line);
+    ImVec2 sp(sz.x - ss.x - 44.0f, 36.0f);
+    dl->AddText(font, mid, ImVec2(sp.x + 2, sp.y + 2), IM_COL32(0, 0, 0, 170), line);
+    dl->AddText(font, mid, sp, IM_COL32(255, 255, 255, 235), line);
+    snprintf(line, sizeof line, "%.0f km/h", h.speed * 0.0152f);   /* a unit is ~4.2 mm */
+    ImVec2 ks = font->CalcTextSizeA(fs * 1.3f, FLT_MAX, 0.0f, line);
+    ImVec2 kp(sz.x - ks.x - 44.0f, sp.y + ss.y + 2.0f);
+    dl->AddText(font, fs * 1.3f, ImVec2(kp.x + 2, kp.y + 2), IM_COL32(0, 0, 0, 170), line);
+    dl->AddText(font, fs * 1.3f, kp, IM_COL32(220, 220, 220, 230), line);
+    /* the manual's balance: a bar with the marker drifting off the middle */
+    if (h.manual) {
+        float w = 220.0f, x0 = sz.x * 0.5f - w * 0.5f, y0 = sz.y * 0.78f;
+        float b = std::max(-1.0f, std::min(1.0f, h.balance));
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y0 + 10.0f), IM_COL32(0, 0, 0, 120), 4.0f);
+        dl->AddRectFilled(ImVec2(x0 + w * 0.4f, y0), ImVec2(x0 + w * 0.6f, y0 + 10.0f), IM_COL32(80, 200, 90, 140));
+        dl->AddCircleFilled(ImVec2(x0 + w * 0.5f * (1.0f + b), y0 + 5.0f), 8.0f,
+                            fabsf(b) > 0.6f ? IM_COL32(255, 80, 60, 230) : IM_COL32(255, 230, 80, 230));
+    }
+    /* the flick-it stick */
+    ImVec2 c(sz.x - 90.0f, sz.y - 90.0f);
+    dl->AddCircleFilled(c, 40.0f, IM_COL32(0, 0, 0, 90));
+    dl->AddCircle(c, 40.0f, IM_COL32(255, 255, 255, 120), 32, 2.0f);
+    dl->AddCircleFilled(ImVec2(c.x + h.stick[0] * 32.0f, c.y - h.stick[1] * 32.0f), 9.0f,
+                        IM_COL32(255, 230, 80, 220));
+}
+
 static void panel_cheats(const OverlayGameInfo &gi)
 {
     if (!gi.gamestate) {
@@ -273,6 +484,10 @@ static void panel_cheats(const OverlayGameInfo &gi)
     }
     ImGui::NewLine();
     ImGui::EndDisabled();
+    ImGui::Separator();
+    panel_shooter();
+    ImGui::Separator();
+    panel_skate();
 }
 
 /* -- Frame -------------------------------------------------------------------- */
@@ -289,7 +504,11 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
         hooked = true;
     }
     sample();
-    if (!s_open && !s_hud)
+    ShooterHud sh;
+    shooter_hud(&sh);
+    SkateHud kh;
+    skate_hud(&kh);
+    if (!s_open && !s_hud && !sh.live && !kh.live)
         return;
     if (!ready) {
         IMGUI_CHECKVERSION();
@@ -311,6 +530,8 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    shooter_overlay();
+    skate_overlay();
     if (s_hud) {
         ImGui::SetNextWindowPos(ImVec2(8, 8));
         ImGui::SetNextWindowBgAlpha(0.5f);
