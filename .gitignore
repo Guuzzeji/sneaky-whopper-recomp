@@ -16,6 +16,7 @@ src/recomp/gen/
 
 # Build and runtime output
 build/
+build-*/
 out/
 saves/
 .vs/

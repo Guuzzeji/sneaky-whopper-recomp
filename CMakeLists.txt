@@ -17,11 +17,31 @@ add_compile_definitions(
     NOMINMAX
 )
 
+# Web port: compact guest memory, one block with every alias folded onto its
+# store and register access through explicit MMIO calls -- the layout
+# WebAssembly needs, buildable natively (xbox_memory_layout.h). The lifted code
+# must be generated with --mmio-range for the XDK D3D/DSOUND/XPP sections.
+option(RECOMP_COMPACT_MEM "Compact guest memory (the WebAssembly layout)" OFF)
+option(RECOMP_MMIO_CENSUS "Log lifted functions that touch MMIO" OFF)
+if(RECOMP_MMIO_CENSUS)
+    add_compile_definitions(RECOMP_MMIO_CENSUS)
+endif()
+if(RECOMP_COMPACT_MEM)
+    add_compile_definitions(XBOX_COMPACT_MEM)
+endif()
+
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 #
 # Vendored in xboxrecomp/ (a git subtree). A plain variable, not a cache one,
 # so old build trees that cached the sibling-clone path pick this up.
 set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xboxrecomp")
+
+# WebAssembly (emcmake): the guest's threads are real threads, so every
+# object is built for shared memory.
+if(EMSCRIPTEN)
+    add_compile_options(-pthread)
+    add_link_options(-pthread)
+endif()
 
 # Add xboxrecomp as a subdirectory -- this builds all 6 runtime libraries
 # and provides the 'xboxrecomp' umbrella target to link against.
@@ -38,28 +58,40 @@ add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 # is silently left out of the build and shows up as unresolved externals.
 file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 
+# The renderer: d3d9 (d3d9_hle.c, Direct3D 9, with the F1 overlay) or gl
+# (gl_hle.c, OpenGL ES 3 / WebGL2: the web port's, testable here on GL 4.3).
+set(RECOMP_RENDERER "d3d9" CACHE STRING "Renderer back end: d3d9 or gl")
+set_property(CACHE RECOMP_RENDERER PROPERTY STRINGS d3d9 gl)
+
 # Core game sources
-set(GAME_SOURCES
-    src/main.c
-    src/recomp_manual.c
-    src/d3d9_hle.c
-    # Shooter mode (P9): CoD4 animations, the gun and its effects, its sounds.
-    src/cod4_anim.c
-    src/mods_mesh.c
-    src/skate.c
-    src/cod4_sound.c
-    # The F1/F2 debug overlay, on the vendored Dear ImGui.
-    src/overlay.cpp
-    third_party/imgui/imgui.cpp
-    third_party/imgui/imgui_draw.cpp
-    third_party/imgui/imgui_tables.cpp
-    third_party/imgui/imgui_widgets.cpp
-    third_party/imgui/imgui_impl_dx9.cpp
-    third_party/imgui/imgui_impl_win32.cpp
-    # Add game-specific sources here, e.g.:
-    # src/asset_loader.c
-    # src/custom_renderer.c
-)
+# Shooter mode (P9) needs cod4_anim.c on every target; its gun, effects and
+# sounds (mods_mesh.c, cod4_sound.c) and skate mode are D3D9/XAudio2 only, so
+# the gl renderer gets mods_stub.c instead and the two modes stay off there.
+if(EMSCRIPTEN)
+    set(RECOMP_RENDERER "gl" CACHE STRING "" FORCE)
+    set(GAME_SOURCES src/main_web.c src/web_host.c)
+else()
+    set(GAME_SOURCES src/main.c)
+endif()
+list(APPEND GAME_SOURCES src/recomp_manual.c src/cod4_anim.c)
+if(RECOMP_RENDERER STREQUAL "gl")
+    list(APPEND GAME_SOURCES src/gl_hle.c src/mods_stub.c)
+else()
+    list(APPEND GAME_SOURCES
+        src/d3d9_hle.c
+        src/mods_mesh.c
+        src/skate.c
+        src/cod4_sound.c
+        # The F1/F2 debug overlay, on the vendored Dear ImGui.
+        src/overlay.cpp
+        third_party/imgui/imgui.cpp
+        third_party/imgui/imgui_draw.cpp
+        third_party/imgui/imgui_tables.cpp
+        third_party/imgui/imgui_widgets.cpp
+        third_party/imgui/imgui_impl_dx9.cpp
+        third_party/imgui/imgui_impl_win32.cpp
+    )
+endif()
 
 # The recomp pipeline also generates a dispatch header and function declarations.
 # These are included by the generated .c files:
@@ -67,10 +99,17 @@ set(GAME_SOURCES
 #   src/recomp/recomp_dispatch.h     - binary search dispatch table
 #   src/recomp/recomp_types.h        - register model, ICALL macros, MEM helpers
 
+if(EMSCRIPTEN)
+    add_executable(${PROJECT_NAME}
+        ${GAME_SOURCES}
+        ${RECOMP_GEN_SOURCES}
+    )
+else()
 add_executable(${PROJECT_NAME} WIN32
     ${GAME_SOURCES}
     ${RECOMP_GEN_SOURCES}
 )
+endif()
 
 # Link against the xboxrecomp umbrella target (all 6 runtime libraries)
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
@@ -85,7 +124,37 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
 )
 
+# Shooter and skate mode draw and play through D3D9/XAudio2 (mods_mesh.c,
+# cod4_sound.c): only the d3d9 renderer offers them.
+if(NOT RECOMP_RENDERER STREQUAL "gl")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE RECOMP_MODS)
+endif()
+
 # Windows SDK libraries needed at link time
+if(EMSCRIPTEN)
+    # The browser build: see docs/WEB_PORT_RESEARCH.md. main() runs on a
+    # pthread so the guest can block; the canvas moves to it as an
+    # OffscreenCanvas; game files come through WasmFS (main_web.c).
+    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".js")
+    target_link_options(${PROJECT_NAME} PRIVATE
+        -sPROXY_TO_PTHREAD
+        -sPTHREAD_POOL_SIZE=32
+        -sINITIAL_MEMORY=1536MB
+        -sSTACK_SIZE=16MB
+        -sDEFAULT_PTHREAD_STACK_SIZE=4MB
+        -sWASMFS
+        -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2
+        -sOFFSCREENCANVAS_SUPPORT
+        -sENVIRONMENT=web,worker
+        -sEXPORTED_RUNTIME_METHODS=ENV
+        -sEXIT_RUNTIME=0
+        --profiling-funcs
+    )
+endif()
+if(RECOMP_RENDERER STREQUAL "gl" AND WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE opengl32)
+endif()
+if(WIN32)
 target_link_libraries(${PROJECT_NAME} PRIVATE
     d3d9
     xinput
@@ -101,6 +170,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     xaudio2_8
     ole32
 )
+endif()
 
 # MSVC-specific: large address aware, increase section limit for big generated files
 if(MSVC)

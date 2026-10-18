@@ -241,3 +241,16 @@ Cheats that borrow other games' mechanics. Nothing from those games is in the re
   - **Look and sound:** a procedural board drawn at present (`mods_mesh.c`); the stance, ollie lift and bail fall on his bones before `0x151650`; the camera follows the board; synthesised board sounds.
   - **Toolkit:** `mkb_set_mute`.
 - [ ] Skate polish: Skate 3's real tuning numbers, sounds and board model; grinds and manuals.
+
+## W — Web port (experimental, branch `web-port-experimental`)
+
+Research, pros and cons, and decisions: [WEB_PORT_RESEARCH.md](WEB_PORT_RESEARCH.md). Chrome only, built and served locally from the user's own disc. Toolkit work goes in the vendored `xboxrecomp/`.
+
+- [x] **W0 Feasibility spikes.** Done: go (see WEB_PORT_RESEARCH.md §6). Compile `src/recomp/gen` with `emcc -O2` and record wasm size, per-function body sizes against the 7.6 MB limit, and compile time. Measure the frame-time cost of a remapping `XBOX_PTR` in the native build. List every guest instruction that touches the MMIO ranges (0xFD…, 0xFE8…). Exit: go/no-go numbers written into WEB_PORT_RESEARCH.md.
+- [x] **W1 Portable memory and MMIO (native).** Done: `RECOMP_COMPACT_MEM=ON` plays the camp level (WEB_PORT_RESEARCH.md §7). One linear guest buffer behind `XBOX_PTR`, with no mirrors or aliasing. MMIO through explicit checks, with no VEH or page protection. Exit: the Windows build plays the first level with the VEH disabled.
+- [x] **W2 GL host (native).** Done as a GL ES 3 renderer (`src/gl_hle.c`) tested on native GL 4.3; the SDL part was dropped: the browser host is Emscripten html5 and Web Audio (WEB_PORT_RESEARCH.md §8). A GL back end for `d3d9_hle.c`: a fixed-function ubershader, VSH to GLSL ES 3.00, and an S3TC fallback. SDL for audio, input and the window. ImGui on SDL2/OpenGL3. Exit: the SDL build plays menus and the first level on Windows.
+- [x] **W3 Emscripten build.** Done: boots, movies, menus and the camp level in Chrome at 30 fps (§8). An `emcmake` preset, `PROXY_TO_PTHREAD` with a pre-sized pool, OffscreenCanvas, the ISO through WORKERFS with an XDVDFS reader, audio through an AudioWorklet, pointer lock, and a web key map. Exit: boots to the title screen in Chrome.
+- [x] **W4 Performance.** Exit met without tuning: the camp level holds 30 fps in Chrome (dips to ~25); profiling and the exe-size cost of compact memory remain open. Chrome profiling, splitting huge or hot functions, and batching uploads. Exit: the first level at 30 fps in Chrome.
+- [x] **W4.1 Monorepo merge.** `main` merged in (P9 and the vendored toolkit). Each build target is a CMake preset (`release`, `gl`, `web`). One lift with `--mmio-range` serves every preset. The page has the unlock and warp cheats (`web_cheat`). Shooter and skate mode stay D3D9-only (`mods_stub.c`).
+- [ ] Shooter and skate mode on `gl`: port `mods_mesh.c` to GL and the mod sounds to Web Audio.
+- [ ] **W5 Packaging.** `tools/web_port.py`, which goes from disc to a static `web/` folder, plus `serve.py` sending COOP/COEP. Exit: a fresh clone and the user's ISO reach a playable page with one command.
