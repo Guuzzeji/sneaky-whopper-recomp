@@ -29,6 +29,7 @@ uint32_t xbox_ContiguousInUseBytes(void);
 int xbox_HeapReclaimEnabled(void);
 unsigned xa2_underruns(void);
 void mkb_set_suspended(int on);
+int mkb_cursor_hidden(void);
 typedef int (*xbox_fb_msg_hook_t)(void *hwnd, unsigned msg, uintptr_t wp, intptr_t lp);
 void xbox_FramebufferWindowSetMsgHook(xbox_fb_msg_hook_t fn);
 }
@@ -44,6 +45,12 @@ static unsigned s_qn;
 
 static int msg_hook(void *h, unsigned m, uintptr_t w, intptr_t l)
 {
+    /* No pointer over the picture while the mouse turns the camera. This is
+     * the window's thread, the only one whose SetCursor shows. */
+    if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT && mkb_cursor_hidden()) {
+        SetCursor(NULL);
+        return 1;
+    }
     if (m == WM_KEYDOWN && !(l & (1 << 30))) {          /* not a repeat */
         if (w == VK_F1) {
             LONG open = !s_open;

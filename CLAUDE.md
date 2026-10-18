@@ -96,9 +96,10 @@ The exe finds the repo root itself: when `game\default.xbe` is not in the workin
 
 It also turns these on. Set any switch to `0` to turn it off:
 - `RECOMP_VBLANK`: the XMV player times frames by vblank.
-- `RECOMP_USB` and `RECOMP_MKB`: the pad on the emulated OHCI bus, and keyboard and mouse as a pad on port 0 (raw input, toolkit `src/input/mkb_input.c`). The bindings are in `mkb.ini` at the repo root (`RECOMP_MKB_INI` moves it): WASD move, mouse camera, Shift run, left click or Space A, right click or Q B, E Y, wheel zoom, F first person, Escape START, arrows and Enter for menus. F9 releases the mouse. `RECOMP_MKB=0` falls back to the keyboard-only `RECOMP_KEYBOARD` pad.
+- `RECOMP_USB` and `RECOMP_MKB`: the pad on the emulated OHCI bus, and keyboard and mouse as a pad on port 0 (raw input, toolkit `src/input/mkb_input.c`). The bindings are in `mkb.ini` at the repo root (`RECOMP_MKB_INI` moves it): WASD move, mouse camera, Shift run, left click or Space A, right click or Q B, E Y, wheel zoom, F first person, Escape or P START (pause), arrows and Enter for menus. The mouse is locked (hidden, kept inside the window) only while the King is in play, which is when the game reads the camera stick (`game_in_play`); menus, the pause menu, loading and the title screens free it. F9 releases it in play, a click takes it back. Closing the window ends the process. `RECOMP_MKB=0` falls back to the keyboard-only `RECOMP_KEYBOARD` pad.
 - `RECOMP_HEAP_RECLAIM`: reuse freed contiguous memory. Without it the movies run the arena dry.
 - `RECOMP_SCALE=N` (1 to 8, default 2): D3D9 render targets at N times the guest's 640x480, shown through a swap chain on the framebuffer window.
+- `RECOMP_WIDESCREEN`: 16:9, anamorphic. The guest still draws 640x480: the camera FOV setter (`0x12CA70`) gets a hor+ FOV and the 2D ortho (`0x30FB70`, from `0x1223A0`) is squeezed by 3/4, so the HUD stays 4:3 and centred; the present stretches to 16:9. Movies stretch.
 
 Keys: F1 opens the debug overlay (D3D9 stats, health, cheats: unlock levels, warp to a level), F2 shows a frame-rate line, F9 releases the mouse. The mouse turns the camera directly and points at menu options.
 

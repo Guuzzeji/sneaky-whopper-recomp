@@ -41,6 +41,12 @@ void game_cheat_warp(int slot);       /* index into g_levels[] */
  * x < 0 when it is outside the picture. Returns 1 while a menu is up. */
 int menu_mouse_update(int x, int y);
 
+/* The King is under control (the camera stick is being read). */
+int game_in_play(void);
+
+/* RECOMP_WIDESCREEN: the guest's 640x480 is anamorphic 16:9 (recomp_manual.c). */
+int game_widescreen(void);
+
 void overlay_present(void *dev, void *hwnd, void *backbuffer, const OverlayD3dStats *st);
 
 #ifdef __cplusplus

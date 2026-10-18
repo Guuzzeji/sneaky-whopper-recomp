@@ -344,7 +344,8 @@ static int dev_ready(void)
     {
         /* ponytail: 640x480 a scale step, shrunk to fit the screen. Async:
          * the window's own thread moves it. */
-        RECT wa, wr = { 0, 0, (LONG)(640 * s_scale), (LONG)(480 * s_scale) };
+        RECT wa, wr = { 0, 0, (LONG)((game_widescreen() ? 640 * 4 / 3 : 640) * s_scale),
+                        (LONG)(480 * s_scale) };
         SystemParametersInfoA(SPI_GETWORKAREA, 0, &wa, 0);
         while (wr.right > (wa.right - wa.left) * 9 / 10
                || wr.bottom > (wa.bottom - wa.top) * 9 / 10) {
@@ -1781,8 +1782,9 @@ static void present(uint32_t data)
     if (r && r->surf && hwnd && sc_ready(hwnd)
         && SUCCEEDED(IDirect3DSwapChain9_GetBackBuffer(s_sc, 0, D3DBACKBUFFER_TYPE_MONO, &bb))) {
         RECT fit;
-        UINT fw = s_sc_w, fh = s_sc_w * r->h / r->w;
-        if (fh > s_sc_h) { fh = s_sc_h; fw = s_sc_h * r->w / r->h; }
+        UINT aw = game_widescreen() ? r->w * 4 / 3 : r->w;   /* anamorphic 16:9 */
+        UINT fw = s_sc_w, fh = s_sc_w * r->h / aw;
+        if (fh > s_sc_h) { fh = s_sc_h; fw = s_sc_h * aw / r->h; }
         fit.left = (LONG)(s_sc_w - fw) / 2;
         fit.top = (LONG)(s_sc_h - fh) / 2;
         fit.right = fit.left + (LONG)fw;
@@ -1803,8 +1805,19 @@ static void present(uint32_t data)
                 && pt.x >= fit.left && pt.x < fit.right && pt.y >= fit.top && pt.y < fit.bottom) {
                 gx = (int)((pt.x - fit.left) * 640 / (LONG)fw);
                 gy = (int)((pt.y - fit.top) * 480 / (LONG)fh);
+                /* Widescreen draws the menus squeezed to the middle 3/4. */
+                if (game_widescreen())
+                    gx = 320 + (gx - 320) * 4 / 3;
             }
-            mkb_set_menu_cursor(menu_mouse_update(gx, gy));
+            /* The mouse is locked only while the King is in play; the pause
+             * menu stops the camera too. The front end's page stays
+             * "active" under a level, so hover only when not in play. */
+            {
+                int play = game_in_play(), menu = menu_mouse_update(play ? -1 : gx, gy);
+                if (getenv("RECOMP_MOUSE_TRACE") && s_frame % 120 == 0)
+                    fprintf(stderr, "[MOUSE] menu=%d play=%d\n", menu, play);
+                mkb_set_menu_cursor(!play);
+            }
         }
         overlay_present(s_dev, hwnd, bb, &s_st);
         IDirect3DSurface9_Release(bb);

@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stddef.h>   /* ptrdiff_t */
 #include <string.h>   /* memcpy */
+#include <math.h>     /* atan, tan */
 #include <windows.h>  /* GetTickCount */
 
 /* ── ICALL trace ring buffer ───────────────────────────────── */
@@ -252,6 +253,14 @@ static void mouse_frame(void)
                 MEMF(0x32A2A4), MEMF(0x32A29C));
 }
 
+/* The King is under control: the camera stick was read just now. Menus,
+ * loading and the title screens do not read it, so the pointer is free
+ * there (d3d9_hle.c present). */
+int game_in_play(void)
+{
+    return GetTickCount() - s_cam_read_ms < 500;
+}
+
 static float mouse_fp_pop(void)
 {
     float v = (float)g_fp_stack[g_fp_top];
@@ -307,6 +316,62 @@ void sub_0005F480(void)
     PUSH32(g_esp, 0x0005F574u);
     g_ecx = self;
     sub_0005F3F0();
+}
+
+/* ── Widescreen (RECOMP_WIDESCREEN, on by default) ────────────────────── */
+
+/* The title is 4:3 only: XGetVideoFlags (0x1BD963) is read for 480p and
+ * nothing else. 16:9 is done the way a widescreen TV did it, anamorphic:
+ * the guest still draws 640x480, the 3D squeezed to 3/4 width, and the
+ * present stretches it back out to 16:9 (d3d9_hle.c).
+ *
+ * 3D: the camera's FOV setter (0x12CA70, cdecl (fov_x, fov_y); fov_y equal
+ * to the sentinel at 0x2B039C means "from fov_x and the 4:3 aspect at
+ * 0x30FC98") is given a horizontal FOV whose tangent is 4/3 larger and the
+ * vertical FOV the game would have derived itself: hor+. The projection
+ * (0x122460) and the culling frustum read the same cot/sin/cos it writes,
+ * so the sides are not culled. The stored fov_x (0x30F968) is put back to
+ * the 4:3 value, because callers read it to restore a camera later.
+ *
+ * 2D: the HUD and menus are drawn through the ortho at 0x30FB70 (built by
+ * 0x1223A0, M11 = 1/half-width); its x is squeezed by 3/4 so they come
+ * out 4:3 and centred. Pixel-space draws that skip it (the movies) stretch. */
+#define WIDE_X  (4.0 / 3.0)       /* 16:9 over 4:3 */
+
+extern void sub_0012CA70_gen(void);
+extern void sub_001223A0_gen(void);
+
+int game_widescreen(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_WIDESCREEN");
+        on = e && *e && *e != '0';
+    }
+    return on;
+}
+
+void sub_0012CA70(void)
+{
+    float fx = MEMF(g_esp + 4), fy = MEMF(g_esp + 8), k = MEMF(0x2B03A0);
+
+    if (!game_widescreen()) {
+        sub_0012CA70_gen();
+        return;
+    }
+    if (fy == MEMF(0x2B039C))
+        fy = (float)(2.0 * atan(tan(fx * k) / MEMF(0x30FC98)));
+    MEMF(g_esp + 4) = (float)(atan(tan(fx * k) * WIDE_X) / k);
+    MEMF(g_esp + 8) = fy;
+    sub_0012CA70_gen();
+    MEMF(0x30F968) = fx;
+}
+
+void sub_001223A0(void)
+{
+    sub_001223A0_gen();
+    if (game_widescreen())
+        MEMF(0x30FB70) *= (float)(1.0 / WIDE_X);
 }
 
 /* ── Debug overlay: game state and cheats (src/overlay.cpp) ───────────── */
