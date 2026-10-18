@@ -222,12 +222,16 @@ static volatile LONG s_dx, s_dy;
 static volatile LONG s_wheel;        /* wheel steps since last poll   */
 static volatile LONG s_mouse_btn;    /* held: 1 L, 2 R, 4 M, 8 X1, 16 X2 */
 static volatile LONG s_mouse_click;  /* went down since the last poll */
+static volatile LONG s_host_click;   /* went down since mkb_mouse_buttons */
+static volatile LONG s_host_grab;    /* buttons the host takes from the pad */
 static volatile unsigned char s_vk_down[256];
 
 static volatile LONG s_active = 1;   /* F9 toggles this               */
 static volatile LONG s_direct;       /* the title takes the mouse deltas itself */
 static volatile LONG s_suspended;    /* a host overlay owns mouse and keys */
 static volatile LONG s_menu_cursor;  /* show the pointer for a menu       */
+static volatile LONG s_mute_move;    /* a host mode reads WASD itself      */
+static volatile LONG s_mute_analog;  /* bAnalogButtons bits it reads itself */
 static volatile LONG s_thread_up;
 
 /* F9 toggles capture; a click in the window captures again. Read on the
@@ -287,6 +291,7 @@ static void mkb_handle_raw(HRAWINPUT h)
             if (m->usButtonFlags & (1u << (2 * i))) {
                 InterlockedOr(&s_mouse_btn, 1 << i);
                 InterlockedOr(&s_mouse_click, 1 << i);
+                InterlockedOr(&s_host_click, 1 << i);
             }
             if (m->usButtonFlags & (2u << (2 * i)))
                 InterlockedAnd(&s_mouse_btn, ~(1 << i));
@@ -523,7 +528,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     mkb_manage_cursor(!s_menu_cursor);
 
     now = GetTickCount();
-    btn = s_mouse_btn | InterlockedExchange(&s_mouse_click, 0);
+    btn = (s_mouse_btn | InterlockedExchange(&s_mouse_click, 0)) & ~s_host_grab;
     /* A wheel step is held for WHEEL_MS so a title that samples at its own
      * frame rate cannot miss it. */
     {
@@ -538,7 +543,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
 
     memset(analog, 0, sizeof analog);
     for (i = 0; i < 8; i++)
-        if (mkb_target_down(i, btn, wheel))
+        if (mkb_target_down(i, btn, wheel) && !(s_mute_analog & (1 << i)))
             analog[i] = 255;
     for (i = 0; i < 8; i++)
         if (mkb_target_down(MKB_T_UP + i, btn, wheel))
@@ -550,7 +555,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
                - mkb_target_down(MKB_T_MOVE_LEFT, btn, wheel);
         int my = mkb_target_down(MKB_T_MOVE_UP, btn, wheel)
                - mkb_target_down(MKB_T_MOVE_DOWN, btn, wheel);
-        if (mx || my) {
+        if ((mx || my) && !s_mute_move) {
             double n = (mx && my) ? 0.7071 : 1.0;
             mov_x = (SHORT)(mx * n * 32767.0);
             mov_y = (SHORT)(my * n * 32767.0);
@@ -628,8 +633,28 @@ int mkb_take_mouse_delta(long *dx, long *dy)
     return 1;
 }
 
+/* The mouse buttons for the host itself (bits as s_mouse_btn): held now, and
+ * in *clicked those pressed since the last call. Buttons in grab no longer
+ * reach the pad bindings, so a host feature can own them (0 gives them back). */
+int mkb_mouse_buttons(int grab, int *clicked)
+{
+    int c = InterlockedExchange(&s_host_click, 0);
+    InterlockedExchange(&s_host_grab, grab);
+    if (!mkb_enabled() || !s_thread_up || !s_active || s_suspended || !game_is_foreground()) {
+        if (clicked) *clicked = 0;
+        return 0;
+    }
+    if (clicked) *clicked = c;
+    return s_mouse_btn;
+}
+
 void mkb_set_suspended(int on)   { InterlockedExchange(&s_suspended, on != 0); }
 void mkb_set_menu_cursor(int on) { InterlockedExchange(&s_menu_cursor, on != 0); }
+void mkb_set_mute(int move, unsigned analog_mask)
+{
+    InterlockedExchange(&s_mute_move, move != 0);
+    InterlockedExchange(&s_mute_analog, (LONG)(analog_mask & 0xFF));
+}
 
 int mkb_cursor_hidden(void)
 {

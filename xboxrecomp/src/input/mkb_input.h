@@ -69,6 +69,13 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState);
  */
 int mkb_take_mouse_delta(long *dx, long *dy);
 
+/*
+ * The mouse buttons for the host (1 L, 2 R, 4 M, 8 X1, 16 X2): returns those
+ * held, and in *clicked those pressed since the last call. Buttons in `grab`
+ * stop driving their pad bindings until a later call leaves them out.
+ */
+int mkb_mouse_buttons(int grab, int *clicked);
+
 /* A host overlay that wants the mouse and keyboard: while suspended the
  * virtual pad is at rest and the pointer is free. */
 void mkb_set_suspended(int on);
@@ -76,6 +83,9 @@ void mkb_set_suspended(int on);
 /* Show and free the pointer while the title is not in play (a menu, a
  * loading or title screen); keys and buttons still merge. */
 void mkb_set_menu_cursor(int on);
+/* Keep the move keys off the move stick, and the given bAnalogButtons
+ * (bit i = index i) off the pad: a host-side mode reads those keys itself. */
+void mkb_set_mute(int move, unsigned analog_mask);
 
 /* Whether the window should hide the pointer (its WM_SETCURSOR): captured,
  * no overlay, no menu pointer. F9 releases; a click captures. */
