@@ -242,7 +242,7 @@ Cheats that borrow other games' mechanics. Nothing from those games is in the re
   - **Toolkit:** `mkb_set_mute`.
 - [ ] Skate polish: Skate 3's real tuning numbers, sounds and board model; grinds and manuals.
 
-## W — Web port (experimental, branch `web-port-experimental`)
+## W — Web port (experimental, merged into main)
 
 Research, pros and cons, and decisions: [WEB_PORT_RESEARCH.md](WEB_PORT_RESEARCH.md). Chrome only, built and served locally from the user's own disc. Toolkit work goes in the vendored `xboxrecomp/`.
 

@@ -5,7 +5,7 @@ This project turns the original Xbox `default.xbe` of *Burger King: Sneak King* 
 | Build | Preset | Output | Status |
 |---|---|---|---|
 | Windows (Direct3D 9) | `release` | `build\sneakking_recomp.exe` | The main build. Plays the whole game. Has the F1 overlay, the cheats and the joke modes. |
-| Web (WebAssembly, Chrome) | `web` | `build-web\sneakking_recomp.{js,wasm}` | Experimental (branch `web-port-experimental`). Boots, plays the movies and menus, and runs the first level at about 30 fps. Has the unlock and warp cheats. |
+| Web (WebAssembly, Chrome) | `web` | `build-web\sneakking_recomp.{js,wasm}` | Experimental. Boots, plays the movies and menus, and runs the first level at about 30 fps. Has the unlock and warp cheats. |
 
 Two more presets are for development. `relwithdebinfo` is the Windows build with a PDB. `gl` is the web build's renderer and memory layout as a Windows exe, so you can debug the web path in Visual Studio.
 
@@ -131,8 +131,6 @@ Controls: WASD moves, the mouse turns the camera, Shift runs, left click or Spac
 The exe needs no switches. `CLAUDE.md` lists the `RECOMP_*` environment switches for testing (scale, widescreen, traces, warps, the joke modes).
 
 ### Step 2b: the web build (experimental)
-
-You must be on the `web-port-experimental` branch.
 
 1. Install the Emscripten SDK into `C:\repos\emsdk`:
    ```
