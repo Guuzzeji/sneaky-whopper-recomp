@@ -3,11 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ============================================================================
 # Burger King: Sneak King - Static Recompilation
 #
-# Copy this template to your game project root and customize:
-#   1. Change the project name below
-#   2. Set XBOXRECOMP_DIR to where you cloned xboxrecomp
-#   3. Adjust source file lists as you add game-specific code
-#   4. Add any game-specific compile definitions or link libraries
+# The xboxrecomp toolkit lives in xboxrecomp/, with our patches on top.
 # ============================================================================
 
 project(sneakking_recomp C CXX)
@@ -36,22 +32,16 @@ endif()
 
 # ── xboxrecomp toolkit ──────────────────────────────────────────
 #
-# Option A: xboxrecomp as a subdirectory (simplest)
-#   Place xboxrecomp/ next to your game project and use a relative path.
-#
-# Option B: find_package (if you install xboxrecomp system-wide)
-#   find_package(xboxrecomp REQUIRED)
-#
+# Vendored in xboxrecomp/ (a git subtree). A plain variable, not a cache one,
+# so old build trees that cached the sibling-clone path pick this up.
+set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xboxrecomp")
+
 # WebAssembly (emcmake): the guest's threads are real threads, so every
 # object is built for shared memory.
 if(EMSCRIPTEN)
     add_compile_options(-pthread)
     add_link_options(-pthread)
 endif()
-
-# Adjust this path to point to your xboxrecomp clone:
-set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../xboxrecomp" CACHE PATH
-    "Path to the xboxrecomp toolkit root directory")
 
 # Add xboxrecomp as a subdirectory -- this builds all 6 runtime libraries
 # and provides the 'xboxrecomp' umbrella target to link against.
@@ -74,17 +64,24 @@ set(RECOMP_RENDERER "d3d9" CACHE STRING "Renderer back end: d3d9 or gl")
 set_property(CACHE RECOMP_RENDERER PROPERTY STRINGS d3d9 gl)
 
 # Core game sources
+# Shooter mode (P9) needs cod4_anim.c on every target; its gun, effects and
+# sounds (mods_mesh.c, cod4_sound.c) and skate mode are D3D9/XAudio2 only, so
+# the gl renderer gets mods_stub.c instead and the two modes stay off there.
 if(EMSCRIPTEN)
     set(RECOMP_RENDERER "gl" CACHE STRING "" FORCE)
-    set(GAME_SOURCES src/main_web.c src/web_host.c src/recomp_manual.c)
+    set(GAME_SOURCES src/main_web.c src/web_host.c)
 else()
-    set(GAME_SOURCES src/main.c src/recomp_manual.c)
+    set(GAME_SOURCES src/main.c)
 endif()
+list(APPEND GAME_SOURCES src/recomp_manual.c src/cod4_anim.c)
 if(RECOMP_RENDERER STREQUAL "gl")
-    list(APPEND GAME_SOURCES src/gl_hle.c)
+    list(APPEND GAME_SOURCES src/gl_hle.c src/mods_stub.c)
 else()
     list(APPEND GAME_SOURCES
         src/d3d9_hle.c
+        src/mods_mesh.c
+        src/skate.c
+        src/cod4_sound.c
         # The F1/F2 debug overlay, on the vendored Dear ImGui.
         src/overlay.cpp
         third_party/imgui/imgui.cpp
@@ -127,6 +124,12 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
 )
 
+# Shooter and skate mode draw and play through D3D9/XAudio2 (mods_mesh.c,
+# cod4_sound.c): only the d3d9 renderer offers them.
+if(NOT RECOMP_RENDERER STREQUAL "gl")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE RECOMP_MODS)
+endif()
+
 # Windows SDK libraries needed at link time
 if(EMSCRIPTEN)
     # The browser build: see docs/WEB_PORT_RESEARCH.md. main() runs on a
@@ -163,6 +166,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     d3dcompiler
     # overlay.cpp: the thread table and working set.
     psapi
+    # cod4_sound.c: the shooter's gun sounds.
+    xaudio2_8
+    ole32
 )
 endif()
 

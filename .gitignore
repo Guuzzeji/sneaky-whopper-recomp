@@ -4,6 +4,9 @@
 *.xbe
 *.xex
 game/
+# Reference games for the joke modes (user-owned installs/dumps)
+mw1/
+skate3/
 
 # Analysis output (contains disassembly of game code)
 analysis/
@@ -29,3 +32,9 @@ toolkit/
 
 # Compiled shader cache (made at run time)
 nv2a_shaders.bin
+
+# Shooter mode loadout, saved at run time
+shooter.ini
+
+# Side build trees (web port and size experiments)
+build-*/

@@ -13,7 +13,7 @@ Rules for every phase:
 - [x] Make the repo a git repository. Add a `.gitignore` that excludes all game data, analysis dumps and generated C.
 - [x] Install Visual Studio 2022 Community with the C++ workload. It includes MSVC, the Windows SDK, CMake and Ninja.
 - [x] Create a Python `.venv` with capstone, pytest, pefile and numpy. The system Python is uv-managed, so pip cannot install into it.
-- [x] Clone xboxrecomp to `C:\repos\xboxrecomp` (v0.14.0, `eb0aa1d`).
+- [x] Clone xboxrecomp (v0.14.0, `eb0aa1d`). Since vendored as `xboxrecomp/`.
 - [x] Run the toolkit test suite: 805 passed, 7 skipped. It needs TEMP redirected, as described in CLAUDE.md.
 - [x] Build the toolkit runtime libraries in Release.
 - [x] Extract the game partition to `game/` (143 files, 1.55 GB).
@@ -225,13 +225,32 @@ The game's own D3D8 calls now go to host Direct3D 9, one to one, instead of thro
 - [x] 360 HD textures (spike, Urban). `tools/xen_tex.py` pairs the `.xbp` and `.xen` packages by resource name and writes the 360 DXT textures as `game/hd/<hash>.dds`, keyed by the HLE's hash of the OG bytes. The 360 surfaces are linear with padded pitch, not tiled. `RECOMP_HD_TEX=<dir>` makes `tex_get` load them: 202 converted, 207 replacements live in Urban at 30 fps. Other levels: run the tool on their packages. Models are not feasible (different mesh layouts, guest memory).
 - [ ] Follow-ups: menu sliders and scroll options on the wheel; lightmaps (`lm_*`) are skipped because the 360 atlases differ; the GameState mission bits are shown by `g_levels[]` slot, unverified on a profile with progress.
 
+## P9 — Joke modes
+
+Cheats that borrow other games' mechanics. Nothing from those games is in the repo: each is reimplemented in `recomp_manual.c` from what REA shows of the original, and its assets come from the user's own copy at run time (`docs/MODS.md`). Neither reference recomp ([skate3recomp](https://github.com/mchughalex/skate3recomp), [mw2-recompiled](https://github.com/PaulCombal/mw2-recompiled)) has gameplay code to reuse: both lift 360 PowerPC binaries and keep all game logic in generated code.
+
+- [x] CoD4 research. `iw3sp.exe` is wrapped by Steam DRM, so `iw3mp.exe` (same `BG_*` weapon code) was decompiled: the WeaponDef field table, view kick and its recovery, spread growth and decay, fastfile, XModel and IWI layouts (`docs/MW1_NOTES.md`).
+- [x] `tools/cod4_extract.py`: a gun's third-person model from `common_mp.ff` as OBJ (LOD0, attachments hidden by the weapon's `hideTags`), its colour maps as DDS, the raw weapon file as `weapon.ini` with the muzzle (`x_flash`), its sounds as WAVs (`localized_common_mp.ff`), and the flash and tracer sprites.
+- [x] `tools/cod4_anim.py`: 54 CoD4 player clips (rifle and pistol idle, ADS, walk, run, sprint, crouch, torso shoot and reload, deaths) retargeted onto the King's 85-bone skeleton (his bone defs in `L_KingMe_World.xbp`): his model space is CoD4's mirrored (faces -Z), his bind pose a T-pose against CoD4's A-pose, so each bone's rest is aligned first; the grip (`tag_weapon_right` against the wrist) rides along per frame.
+- [x] Shooter mode, third person (F1 > Cheats, a primary and a sidearm). The CoD4 pose is written into the King's bones before `0x151650` builds them; locomotion blends by his real speed and direction against the aim; torso layers for the shot and the reload; spine bent to the camera's pitch. He faces the aim through his heading (`King+0x30C`/`+0x1A4`). KingCam over the right shoulder (`0x2DED0` distance, `0x2D800`/`0x2D940` shoulder offset, `0x2D5E0` without its auto-turn). Gun, muzzle flash and tracers drawn into the presented buffer against the scene's depth (`mods_mesh.c`); gun sounds through XAudio2 (`cod4_sound.c`). Fire rate, spread, view kick, ADS zoom from CoD4; hitscan through the game's raycast; a hit citizen passes out. Toolkit: `mkb_mouse_buttons`.
+- [ ] Polish: play-test feel (camera distance, shoulder offset, turn rate, blend times, aim alignment of the barrel with the crosshair), the gun drawn over the game's HUD (it is drawn at present), finger grip, the rest of the King's own idle (cape, tassels) settling.
+- [ ] CoD4 deaths on citizens (retarget onto the citizens' skeletons) instead of the pass-out.
+- [x] Skate mode (Skate 3 style, F1 > Cheats; `src/skate.c`).
+  - **Research:** Skate 3 is dumped and researched (`docs/SKATE3_NOTES.md`: XEX to PE, headless Ghidra, EB BIG/RefPack, AttribSys); flick-it gestures map to tricks as in Skate 3's state graph.
+  - **Movement:** momentum through the King's physics controller (`[King+0x190]+0x30`, the game's collision and wall sliding); push, brake, carve; bails on hard hits.
+  - **Look and sound:** a procedural board drawn at present (`mods_mesh.c`); the stance, ollie lift and bail fall on his bones before `0x151650`; the camera follows the board; synthesised board sounds.
+  - **Toolkit:** `mkb_set_mute`.
+- [ ] Skate polish: Skate 3's real tuning numbers, sounds and board model; grinds and manuals.
+
 ## W — Web port (experimental, branch `web-port-experimental`)
 
-Research, pros and cons, and decisions: [WEB_PORT_RESEARCH.md](WEB_PORT_RESEARCH.md). Chrome only, built and served locally from the user's own disc. Toolkit work goes on xboxrecomp `sneak-king-web-port`.
+Research, pros and cons, and decisions: [WEB_PORT_RESEARCH.md](WEB_PORT_RESEARCH.md). Chrome only, built and served locally from the user's own disc. Toolkit work goes in the vendored `xboxrecomp/`.
 
 - [x] **W0 Feasibility spikes.** Done: go (see WEB_PORT_RESEARCH.md §6). Compile `src/recomp/gen` with `emcc -O2` and record wasm size, per-function body sizes against the 7.6 MB limit, and compile time. Measure the frame-time cost of a remapping `XBOX_PTR` in the native build. List every guest instruction that touches the MMIO ranges (0xFD…, 0xFE8…). Exit: go/no-go numbers written into WEB_PORT_RESEARCH.md.
 - [x] **W1 Portable memory and MMIO (native).** Done: `RECOMP_COMPACT_MEM=ON` plays the camp level (WEB_PORT_RESEARCH.md §7). One linear guest buffer behind `XBOX_PTR`, with no mirrors or aliasing. MMIO through explicit checks, with no VEH or page protection. Exit: the Windows build plays the first level with the VEH disabled.
 - [x] **W2 GL host (native).** Done as a GL ES 3 renderer (`src/gl_hle.c`) tested on native GL 4.3; the SDL part was dropped: the browser host is Emscripten html5 and Web Audio (WEB_PORT_RESEARCH.md §8). A GL back end for `d3d9_hle.c`: a fixed-function ubershader, VSH to GLSL ES 3.00, and an S3TC fallback. SDL for audio, input and the window. ImGui on SDL2/OpenGL3. Exit: the SDL build plays menus and the first level on Windows.
 - [x] **W3 Emscripten build.** Done: boots, movies, menus and the camp level in Chrome at 30 fps (§8). An `emcmake` preset, `PROXY_TO_PTHREAD` with a pre-sized pool, OffscreenCanvas, the ISO through WORKERFS with an XDVDFS reader, audio through an AudioWorklet, pointer lock, and a web key map. Exit: boots to the title screen in Chrome.
 - [x] **W4 Performance.** Exit met without tuning: the camp level holds 30 fps in Chrome (dips to ~25); profiling and the exe-size cost of compact memory remain open. Chrome profiling, splitting huge or hot functions, and batching uploads. Exit: the first level at 30 fps in Chrome.
+- [x] **W4.1 Monorepo merge.** `main` merged in (P9 and the vendored toolkit). Each build target is a CMake preset (`release`, `gl`, `web`). One lift with `--mmio-range` serves every preset. The page has the unlock and warp cheats (`web_cheat`). Shooter and skate mode stay D3D9-only (`mods_stub.c`).
+- [ ] Shooter and skate mode on `gl`: port `mods_mesh.c` to GL and the mod sounds to Web Audio.
 - [ ] **W5 Packaging.** `tools/web_port.py`, which goes from disc to a static `web/` folder, plus `serve.py` sending COOP/COEP. Exit: a fresh clone and the user's ISO reach a playable page with one command.

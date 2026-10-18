@@ -13,10 +13,13 @@
  * Escape gives the pointer back, so START is Enter here.
  */
 #include <pthread.h>
+#include <stdio.h>
 #include <stdatomic.h>
+#include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 
 #include "keyboard.h"
+#include "overlay.h"
 
 static atomic_long s_mouse_dx, s_mouse_dy;
 static atomic_int s_locked;
@@ -34,6 +37,33 @@ int mkb_take_mouse_delta(long *dx, long *dy)
 
 void mkb_set_suspended(int on) { (void)on; }
 void mkb_set_menu_cursor(int on) { (void)on; }
+
+/* Shooter mode's hooks (recomp_manual.c). The mode is off in the browser
+ * (mods_stub.c), so these are never live. */
+void *xbox_FramebufferWindowHwnd(void) { return NULL; }
+int mkb_mouse_buttons(int grab, int *clicked) { (void)grab; if (clicked) *clicked = 0; return 0; }
+void mkb_set_mute(int move, unsigned analog_mask) { (void)move; (void)analog_mask; }
+
+/* Cheats: the page's buttons (web/index.html) call web_cheat() on the
+ * browser thread; the request runs on the game thread at the next present
+ * (gl_hle.c), where the F1 overlay runs its cheats natively, because they
+ * call into lifted code. 0 unlock levels, 1 unlock all, 2+N warp to slot N. */
+static atomic_int s_cheat = -1;
+
+EMSCRIPTEN_KEEPALIVE void web_cheat(int code) { atomic_store(&s_cheat, code); }
+
+void web_cheats_run(void)
+{
+    int c = atomic_exchange(&s_cheat, -1);
+    if (c >= 0)
+        fprintf(stderr, "[CHEAT] %d\n", c);
+    if (c == 0)
+        game_cheat_unlock_levels();
+    else if (c == 1)
+        game_cheat_unlock_all();
+    else if (c >= 2)
+        game_cheat_warp(c - 2);           /* ignored outside play, as natively */
+}
 
 static bool on_key(int type, const EmscriptenKeyboardEvent *e, void *user)
 {

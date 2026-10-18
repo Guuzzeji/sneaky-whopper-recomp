@@ -139,6 +139,12 @@ int main(void)
     env_default_on("RECOMP_VBLANK");
     env_default_on("RECOMP_USB");
     env_default_on("RECOMP_KEYBOARD");
+    /* The 360's HD textures, as natively (main.c); ?RECOMP_HD_TEX=0 keeps
+     * the Xbox's. Widescreen stays off: the page's canvas is 4:3. */
+    if (!getenv("RECOMP_HD_TEX"))
+        setenv("RECOMP_HD_TEX", "/game/hd", 1);
+    else if (!strcmp(getenv("RECOMP_HD_TEX"), "0"))
+        unsetenv("RECOMP_HD_TEX");
 
     if (!xbox_MemoryLayoutInit(xbe, xbe_size)) {
         fprintf(stderr, "[WEB] memory layout failed\n");

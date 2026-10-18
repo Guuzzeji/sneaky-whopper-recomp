@@ -1863,6 +1863,12 @@ static void present(uint32_t data)
             f0 = s_frame;
         }
     }
+#ifdef __EMSCRIPTEN__
+    {
+        extern void web_cheats_run(void);
+        web_cheats_run();
+    }
+#endif
     if (!r || !r->tex)
         return;
     dump_bmp(r);
@@ -1873,8 +1879,9 @@ static void present(uint32_t data)
             fprintf(stderr, "[GL] presenting into %dx%d\n", ww, wh);
     }
     if (ww > 0 && wh > 0) {
-        int fw = ww, fh = (int)((int64_t)ww * r->h / r->w), fx, fy;
-        if (fh > wh) { fh = wh; fw = (int)((int64_t)wh * r->w / r->h); }
+        int aw = game_widescreen() ? r->w * 4 / 3 : r->w;   /* anamorphic 16:9 */
+        int fw = ww, fh = (int)((int64_t)ww * r->h / aw), fx, fy;
+        if (fh > wh) { fh = wh; fw = (int)((int64_t)wh * aw / r->h); }
         fx = (ww - fw) / 2;
         fy = (wh - fh) / 2;
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -1904,8 +1911,15 @@ static void present(uint32_t data)
                 && pt.x >= fx && pt.x < fx + fw && pt.y >= fy && pt.y < fy + fh) {
                 gx = (pt.x - fx) * 640 / fw;
                 gy = (pt.y - fy) * 480 / fh;
+                if (game_widescreen())    /* the menus are squeezed to the middle 3/4 */
+                    gx = 320 + (gx - 320) * 4 / 3;
             }
-            mkb_set_menu_cursor(menu_mouse_update(gx, gy));
+            /* As d3d9_hle.c: no hover while the King is in play. */
+            {
+                int play = game_in_play();
+                menu_mouse_update(play ? -1 : gx, gy);
+                mkb_set_menu_cursor(!play);
+            }
         }
 #endif
         swap_window();

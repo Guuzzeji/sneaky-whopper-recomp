@@ -1,15 +1,28 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
-      "architecture": { "value": "x64", "strategy": "external" },
-      "cacheVariables": { "CMAKE_C_COMPILER": "cl" },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl"
+      },
       "vendor": {
-        "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] }
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Windows"
+          ]
+        }
       }
     },
     {
@@ -18,7 +31,9 @@
       "description": "The build the docs use: build\\sneakking_recomp.exe",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
     {
       "name": "relwithdebinfo",
@@ -26,11 +41,66 @@
       "description": "Optimised, with a PDB for the debugger. An unoptimised build of the generated code is too slow to play.",
       "inherits": "base",
       "binaryDir": "${sourceDir}/out/build/relwithdebinfo",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "gl",
+      "displayName": "Release, GL renderer (web layout, native)",
+      "description": "The web port's renderer and memory layout on Windows, for debugging it natively: build-gl\\sneakking_recomp.exe. Needs the lifted code made with --mmio-range.",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-gl",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RECOMP_RENDERER": "gl",
+        "RECOMP_COMPACT_MEM": "ON"
+      }
+    },
+    {
+      "name": "web",
+      "displayName": "WebAssembly (experimental)",
+      "description": "Chrome build: build-web\\sneakking_recomp.{js,wasm}. Needs emsdk (EMSDK, default C:/repos/emsdk) and the lifted code made with --mmio-range. Serve with tools/serve.py.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-web",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "environment": {
+        "EMSDK": "C:/repos/emsdk",
+        "EM_CONFIG": "$env{EMSDK}/.emscripten",
+        "EMSDK_PYTHON": "${sourceDir}/.venv/Scripts/python.exe",
+        "PATH": "$env{EMSDK};$env{EMSDK}/upstream/emscripten;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RECOMP_RENDERER": "gl",
+        "RECOMP_COMPACT_MEM": "ON"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "release", "displayName": "Release", "configurePreset": "release", "jobs": 2 },
-    { "name": "relwithdebinfo", "displayName": "Release with debug info", "configurePreset": "relwithdebinfo", "jobs": 2 }
+    {
+      "name": "release",
+      "displayName": "Release",
+      "configurePreset": "release",
+      "jobs": 2
+    },
+    {
+      "name": "relwithdebinfo",
+      "displayName": "Release with debug info",
+      "configurePreset": "relwithdebinfo",
+      "jobs": 2
+    },
+    {
+      "name": "gl",
+      "displayName": "Release, GL renderer",
+      "configurePreset": "gl",
+      "jobs": 2
+    },
+    {
+      "name": "web",
+      "displayName": "WebAssembly (experimental)",
+      "configurePreset": "web",
+      "jobs": 8
+    }
   ]
 }

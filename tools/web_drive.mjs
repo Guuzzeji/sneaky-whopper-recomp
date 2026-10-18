@@ -2,7 +2,8 @@
 //   node tools/web_drive.mjs <url> <seconds> <outdir> [key@sec ...]
 // Launches Chrome with a throwaway profile, prints the page's console (and
 // its workers'), saves a screenshot every 5 s to <outdir>, presses the given
-// keys at the given times (e.g. Enter@10), then closes Chrome.
+// keys at the given times (e.g. Enter@10), clicks cheat buttons (Cheat0@40),
+// then closes Chrome.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,7 +78,12 @@ for (let s = 1; s <= +secs; s++) {
       await send('Debugger.resume', {}, ses.sid);
     }
   }
-  for (const p of presses.filter((p) => p.at === s && p.key !== 'PAUSE')) {
+  for (const p of presses.filter((p) => p.at === s && p.key.startsWith('Cheat'))) {
+    // Cheat<N>: click the page's cheat button N (web/index.html).
+    console.log(stamp(), `[drive] ${p.key}`);
+    await send('Runtime.evaluate', { expression: `document.querySelector('#cheats button[data-c="${p.key.slice(5)}"]').click()` });
+  }
+  for (const p of presses.filter((p) => p.at === s && p.key !== 'PAUSE' && !p.key.startsWith('Cheat'))) {
     const code = vk[p.key] ?? 0;
     console.log(stamp(), `[drive] key ${p.key}`);
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: p.key, code: p.key, windowsVirtualKeyCode: code });

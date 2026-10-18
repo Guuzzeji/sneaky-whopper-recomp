@@ -372,7 +372,7 @@ Save data may be signed with `XCalculateSignature`, an HMAC-SHA1 keyed from the 
 - a **Python pipeline** in `tools/` that turns an XBE into C;
 - a set of **C11 runtime static libraries** in `src/` that the generated C links against.
 
-We have v0.14.0 "Other Machines" (Oct 2026), cloned at `C:\repos\xboxrecomp`.
+We have v0.14.0 "Other Machines" (Oct 2026), vendored in this repo as `xboxrecomp/` (a git subtree, with our patches on top).
 
 ### 6.1 Runtime libraries
 
@@ -387,11 +387,11 @@ We have v0.14.0 "Other Machines" (Oct 2026), cloned at `C:\repos\xboxrecomp`.
 | `xbox_usb` | `src/usb/` | OHCI USB host emulation, for XAPI that drives USB hardware directly |
 | `xbox_video` | `src/video/` | Media Foundation FMV, framebuffer window |
 
-A game repo pulls these in through CMake: `add_subdirectory(${XBOXRECOMP_DIR})`, then links the umbrella target `xboxrecomp`. `XBOXRECOMP_DIR` defaults to `../xboxrecomp`, which is why the toolkit sits next to this repo.
+A game repo pulls these in through CMake: `add_subdirectory(${XBOXRECOMP_DIR})`, then links the umbrella target `xboxrecomp`. `XBOXRECOMP_DIR` points at `xboxrecomp/` in this repo.
 
 ### 6.2 The pipeline, step by step
 
-All commands run **from the toolkit directory** (`C:\repos\xboxrecomp`) with our venv's Python. The paths below are the ones this project uses.
+All commands run **from the toolkit directory** (`C:\repos\sneak-king-recomp\xboxrecomp`) with our venv's Python. The paths below are the ones this project uses.
 
 ```powershell
 $py = 'C:\repos\sneak-king-recomp\.venv\Scripts\python.exe'
@@ -705,11 +705,11 @@ The state of this machine after Phase 0 setup:
   - pytest
   - pefile
   - numpy (pefile and numpy are needed by `tools/fusion` tests)
-- **Toolkit:** `C:\repos\xboxrecomp`, v0.14.0 (commit `eb0aa1d`). Libraries build in Release with Ninja + MSVC.
+- **Toolkit:** `C:\repos\sneak-king-recomp\xboxrecomp`, v0.14.0 (commit `eb0aa1d`). Libraries build in Release with Ninja + MSVC.
 - **Toolkit tests:**
   - Without MSVC on PATH: 711 passed, 98 skipped, 3 failed.
   - Under `vcvars64`: `fpdiff` and the fuzz test pass, and the conformance run reports **6,351 vectors, 0 mismatches**.
-  - The conformance *corpus* stage fails with `PermissionError: [WinError 5] Access is denied` when it launches the freshly built `corpus_harness.exe` from `%TEMP%`. This machine blocks running new binaries from Temp. Redirecting `TMP`/`TEMP` to `C:\repos\xboxrecomp\build\conftmp` fixes it: the full suite then gives **805 passed, 7 skipped, 0 failed**. The command is in `CLAUDE.md`.
+  - The conformance *corpus* stage fails with `PermissionError: [WinError 5] Access is denied` when it launches the freshly built `corpus_harness.exe` from `%TEMP%`. This machine blocks running new binaries from Temp. Redirecting `TMP`/`TEMP` to `C:\repos\sneak-king-recomp\xboxrecomp\build\conftmp` fixes it: the full suite then gives **805 passed, 7 skipped, 0 failed**. The command is in `CLAUDE.md`.
 - **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921` (JDK 25 installed). The `ghidra-xbe` loader is not installed yet (Phase 1).
 - **xemu:** installed through winget for reference comparison. It needs **your own** console BIOS and MCPX boot ROM dumps, plus an HDD image, to run. Nothing in this repo provides those.
 - **Legal hygiene:** the ISO, extracted `game/`, `analysis/` and generated `src/recomp/gen/` are all git-ignored. Never commit or upload game data or derived disassembly.
@@ -761,7 +761,7 @@ The state of this machine after Phase 0 setup:
 ### Reading order
 
 1. **This report**, sections 1, 4 and 6.
-2. xboxrecomp `README.md`, `docs/GETTING_STARTED.md`, `docs/pipeline/01-06`, `docs/technical/memory-layout.md`, all in `C:\repos\xboxrecomp\docs`.
+2. xboxrecomp `README.md`, `docs/GETTING_STARTED.md`, `docs/pipeline/01-06`, `docs/technical/memory-layout.md`, all in `C:\repos\sneak-king-recomp\xboxrecomp\docs`.
 3. The **BLiNX 2 recomp README**, to see how a finished OG Xbox recomp was structured and tested.
 4. **xboxdevwiki**: the XBE, Kernel and Memory pages.
 5. The **Burnout 3** repo, for a real per-game layout (seeds, `main.c`, overrides).
