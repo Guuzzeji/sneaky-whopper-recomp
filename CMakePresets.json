@@ -60,12 +60,12 @@
     {
       "name": "web",
       "displayName": "WebAssembly (experimental)",
-      "description": "Chrome build: build-web\\sneakking_recomp.{js,wasm}. Needs emsdk (EMSDK, default C:/repos/emsdk) and the lifted code made with --mmio-range. Serve with tools/serve.py.",
+      "description": "Chrome build: build-web\\sneakking_recomp.{js,wasm}. Needs emsdk (EMSDK, default ../emsdk next to the repo) and the lifted code made with --mmio-range. Serve with tools/serve.py.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-web",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
       "environment": {
-        "EMSDK": "C:/repos/emsdk",
+        "EMSDK": "${sourceDir}/../emsdk",
         "EM_CONFIG": "$env{EMSDK}/.emscripten",
         "EMSDK_PYTHON": "${sourceDir}/.venv/Scripts/python.exe",
         "PATH": "$env{EMSDK};$env{EMSDK}/upstream/emscripten;$penv{PATH}"

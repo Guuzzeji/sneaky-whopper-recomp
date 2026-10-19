@@ -8,7 +8,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 - Phases and progress: `docs/ROADMAP.md`. Tick boxes there as work lands.
 
 ## Hard rules
-- **Never commit or upload game data.** That means the ISO, XBE, XEX, `game/`, `analysis/` (it contains disassembly) and `src/recomp/gen/` (lifted game code). `.gitignore` covers all of these; keep it that way. The user owns the physical disc. The same applies to the reference games for the joke modes: `mw1/` (CoD4 PC install) and `skate3/` (unpacked from `skate-3-usa-x360-dump-10-17-26.iso` in the root), and anything extracted from them into `game/mods/`.
+- **Never commit or upload game data.** That means the ISO, XBE, XEX, `game/`, `analysis/` (it contains disassembly) and `src/recomp/gen/` (lifted game code). `.gitignore` covers all of these; keep it that way. The user owns the physical disc. The same applies to the reference games for the joke modes: `mw1/` (CoD4 PC install) and `skate3/` (unpacked from your Skate 3 ISO in the root), and anything extracted from them into `game/mods/`.
 - **Target the OG Xbox build only.** The disc is hybrid and also holds a 360 `default.xex`. We decided against XenonRecomp: its CPU lifter is proven, but the runtime would be mostly DIY. Use the XEX only as a cross-reference.
 - **Never hand-edit `src/recomp/gen/`.** It is regenerated. Fixes go in:
   - `src/recomp_manual.c` (overrides)
@@ -18,7 +18,7 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 ## Layout
 | Path | What |
 |---|---|
-| `sneak-king-usa-dump-10-16-2026.iso` | User's redump. The XDVDFS game partition starts at offset `0x18300000`. |
+| `<your-dump>.iso` | Your own redump of the disc, in the repo root. The XDVDFS game partition starts at offset `0x18300000`. |
 | `game/` | Extracted disc: 143 files, 1.55 GB, including `default.xbe` and `default_analysis.json`. |
 | `mw1/` | The user's CoD4: Modern Warfare PC install (`iw3sp.exe`, `zone/english/*.ff`, `main/iw_*.iwd`). Reference for the shooter joke mode; gitignored. |
 | `analysis/{disasm,func_id,abi}/` | Pipeline output (functions, xrefs, labels, strings, identified functions, ABI). |
@@ -57,9 +57,9 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 ## Environment
 - **Compiler:** MSVC, from VS 2022 Community at `C:\Program Files\Microsoft Visual Studio\2022\Community`. Plain shells don't have `cl`/`ninja` on PATH. Wrap commands:
   `cmd /c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul && <command>'`
-- **Python:** use `C:\repos\sneak-king-recomp\.venv\Scripts\python.exe` (packages: capstone, pytest, pefile, numpy). The system Python is uv-managed, so `pip install` is blocked.
-- **Running toolkit tools:** run `tools.*` with the toolkit as the working directory (`C:\repos\sneak-king-recomp\xboxrecomp`). Set `PYTHONIOENCODING=utf-8` so report printing doesn't crash.
-- **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921\ghidra_12.1.4_PUBLIC` (note the nested folder). ghidra-mcp is also available.
+- **Python:** use `.venv\Scripts\python.exe` in the repo root (packages: capstone, pytest, pefile, numpy). The system Python is uv-managed, so `pip install` is blocked.
+- **Running toolkit tools:** run `tools.*` with the toolkit as the working directory (`xboxrecomp\`). Set `PYTHONIOENCODING=utf-8` so report printing doesn't crash.
+- **Ghidra:** 12.1.4; `tools/skate3_ghidra.py` takes its path from `GHIDRA_INSTALL_DIR`. The release zip unpacks to a nested folder. ghidra-mcp is also available.
   - Ghidra 12 has no Jython. Run the toolkit's `.py` Ghidra scripts under PyGhidra, which is installed in the venv, with `@runtime PyGhidra`. The command is in `docs/P1_FINDINGS.md`.
   - The analyzed project is in `xboxrecomp\tools\ghidra_naming\work\`. The toolkit's `.gitignore` keeps it out of git.
 - **XbSymbolDatabase:** run the CLI as `toolkit\xbsymbol\win_x64\bin\XbSymbolDatabaseCLI.exe <xbe> -e`.
@@ -69,20 +69,20 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
   - The provider is Ghidra 12.1.4. The first query waits for auto-analysis to finish, which takes a few minutes.
   - The session database is temporary. Names and comments set through REA are lost when it closes, so put lasting names in `analysis/names_combined.json` instead.
 - **xemu:** the reference emulator, at `toolkit\xemu\xemu.exe` (gitignored). The `config\` folder holds the user's BIOS, MCPX and HDD image. Settings live in `%APPDATA%\xemu\xemu\xemu.toml`, which uses absolute paths, so update it whenever the folder moves.
-- **Known environment issue:** this machine blocks executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (825 passed, 7 skipped):
-  `cmd /c 'set TMP=C:\repos\sneak-king-recomp\xboxrecomp\build\conftmp&& set TEMP=C:\repos\sneak-king-recomp\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd /d C:\repos\sneak-king-recomp\xboxrecomp && <venv python> -m pytest tools/ -q'`
+- **Known environment issue:** some machines block executing freshly compiled exes from `%TEMP%` (`PermissionError: [WinError 5]`). Run the toolkit tests with TEMP redirected; then all pass (825 passed, 7 skipped):
+  `cmd /c 'set TMP=%CD%\xboxrecomp\build\conftmp&& set TEMP=%CD%\xboxrecomp\build\conftmp&& "<vcvars64.bat>" >nul 2>&1 && cd xboxrecomp && <venv python> -m pytest tools/ -q'`
 
 ## Pipeline commands
-Run these from `C:\repos\sneak-king-recomp\xboxrecomp`, with `$py` set to the venv Python, `$x` to `C:\repos\sneak-king-recomp\game\default.xbe` and `$a` to `C:\repos\sneak-king-recomp\analysis`.
+Run these from `xboxrecomp\`, with `$py` set to `..\.venv\Scripts\python.exe`, `$x` to `..\game\default.xbe` and `$a` to `..\analysis`.
 
 ```powershell
-& $py -m tools.xiso unpack <iso> -o C:\repos\sneak-king-recomp\game
-& $py -m tools.xbe_parser $x --json C:\repos\sneak-king-recomp\game\default_analysis.json
-& $py -m tools.disasm $x -o $a\disasm --force --seed-functions C:\repos\sneak-king-recomp\seeds\p1_static.json --seed-functions C:\repos\sneak-king-recomp\seeds\p3_runtime.json --seed-functions C:\repos\sneak-king-recomp\seeds\p5_xpp.json   # ~13 min
+& $py -m tools.xiso unpack <iso> -o ..\game
+& $py -m tools.xbe_parser $x --json ..\game\default_analysis.json
+& $py -m tools.disasm $x -o $a\disasm --force --seed-functions ..\seeds\p1_static.json --seed-functions ..\seeds\p3_runtime.json --seed-functions ..\seeds\p5_xpp.json   # ~13 min
 & $py tools\ghidra_naming\merge_names.py --names-json $a\names_combined.json --functions-json $a\disasm\functions.json --apply   # after disasm, before recomp
 & $py -m tools.func_id $x --functions $a\disasm\functions.json --strings $a\disasm\strings.json --xrefs $a\disasm\xrefs.json -o $a\func_id
 & $py -m tools.abi_analysis $x --disasm-dir $a\disasm --func-id-dir $a\func_id --output-dir $a\abi
-& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir C:\repos\sneak-king-recomp\src\recomp\gen --game-name "Sneak King" --exclude-manual C:\repos\sneak-king-recomp\src\recomp_manual.c --exclude-manual C:\repos\sneak-king-recomp\src\d3d9_hle.c --exclude-manual C:\repos\sneak-king-recomp\src\d3d_hle_shared.h --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
+& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir ..\src\recomp\gen --game-name "Sneak King" --exclude-manual ..\src\recomp_manual.c --exclude-manual ..\src\d3d9_hle.c --exclude-manual ..\src\d3d_hle_shared.h --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
 ```
 
 `d3d_hle_shared.h` must be an `--exclude-manual` too: it holds the `extern void sub_X_gen(void);` declarations that tell the lifter which D3D bodies to emit as `sub_X_gen`. Without it the link fails with about 35 unresolved `sub_X_gen`. The three `--mmio-range` sections (D3D, DSOUND, XPP) reach hardware registers through explicit calls instead of page traps, which the web port needs (`docs/WEB_PORT_RESEARCH.md`). `-DRECOMP_COMPACT_MEM=ON` builds the web memory layout natively.
@@ -91,7 +91,7 @@ Build from the repo root inside the vcvars wrapper. Keep parallelism low, becaus
 - `release`: the Windows game on D3D9, in `build\sneakking_recomp.exe`. This is the main build.
 - `relwithdebinfo`: the same build, optimised, with a PDB, in `out\build\relwithdebinfo`. An unoptimised build of the generated code is too slow to play.
 - `gl`: the web port's GL renderer and compact memory on Windows, in `build-gl\`, for debugging the web path natively.
-- `web`: WebAssembly, in `build-web\`. It needs emsdk (`EMSDK`, default `C:\repos\emsdk`); `tools\web_build.cmd` wraps it.
+- `web`: WebAssembly, in `build-web\`. It needs emsdk (`EMSDK`, default `..\emsdk` next to the repo); `tools\web_build.cmd` wraps it.
 
 ```
 cmake --preset release && cmake --build --preset release
@@ -136,7 +136,7 @@ The toolkit in `xboxrecomp/` carries local patches that are not upstream: the cp
 
 ## Web build (experimental)
 The same game in Chrome as WebAssembly: `docs/WEB_PORT_RESEARCH.md` (research, decisions, results) and the W phases in `docs/ROADMAP.md`. Getting started: `docs/BUILDING.md`.
-- Emscripten SDK at `C:\repos\emsdk`. `tools\web_build.cmd` (the `web` preset) builds `build-web\sneakking_recomp.{js,wasm}`; `.venv\Scripts\python.exe tools\serve.py` serves `web/index.html`, the build and `game/` on http://localhost:8080/ (COOP/COEP, range requests, generated `game/manifest.txt`). Local only: the build contains lifted game code, so it is never hosted.
+- Emscripten SDK in `..\emsdk` next to the repo. `tools\web_build.cmd` (the `web` preset) builds `build-web\sneakking_recomp.{js,wasm}`; `.venv\Scripts\python.exe tools\serve.py` serves `web/index.html`, the build and `game/` on http://localhost:8080/ (COOP/COEP, range requests, generated `game/manifest.txt`). Local only: the build contains lifted game code, so it is never hosted.
 - `src/main_web.c` (boot, WasmFS fetch mount), `src/web_host.c` (`mkb.ini`'s keyboard and mouse bindings, menu pointer, pointer lock in play), `src/gl_hle.c` (the GL ES 3 / WebGL2 renderer; natively `-DRECOMP_RENDERER=gl`), `src/d3d_hle_shared.h` (guest side shared with `d3d9_hle.c`). Toolkit: `apu_web.c`, compact memory (`XBOX_COMPACT_MEM`, `xbox_GuestPtr`), explicit MMIO (`xbox_MmioRead/Write`).
 - The page sets `RECOMP_WIDESCREEN` (on unless `?RECOMP_WIDESCREEN=0`) and sizes both canvases to 16:9 or 4:3 before the game takes `#canvas`. The log panel can be hidden (remembered in `localStorage`).
 - Cheats: the page's buttons call `web_cheat()` (`web_host.c`). It runs unlock and warp on the game thread at the next present (`gl_hle.c`), as the F1 overlay does natively. The `gl` renderer has no overlay. Shooter and skate mode are D3D9/XAudio2 only. On `gl` the build links `src/mods_stub.c` instead of `mods_mesh.c`, `skate.c` and `cod4_sound.c`, and both modes report themselves unavailable. `RECOMP_MODS` is defined only for the d3d9 renderer.

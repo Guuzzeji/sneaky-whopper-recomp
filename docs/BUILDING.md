@@ -132,11 +132,11 @@ The exe needs no switches. `CLAUDE.md` lists the `RECOMP_*` environment switches
 
 ### Step 2b: the web build (experimental)
 
-1. Install the Emscripten SDK into `C:\repos\emsdk`:
+1. Install the Emscripten SDK next to the repo, in `..\emsdk`. From the repo root:
    ```
-   git clone https://github.com/emscripten-core/emsdk C:\repos\emsdk
-   C:\repos\emsdk\emsdk install latest
-   C:\repos\emsdk\emsdk activate latest
+   git clone https://github.com/emscripten-core/emsdk ..\emsdk
+   ..\emsdk\emsdk install latest
+   ..\emsdk\emsdk activate latest
    ```
    If you put it somewhere else, set `EMSDK` in a `CMakeUserPresets.json` that inherits the `web` preset.
 2. Build:

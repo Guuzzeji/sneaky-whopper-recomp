@@ -391,14 +391,14 @@ A game repo pulls these in through CMake: `add_subdirectory(${XBOXRECOMP_DIR})`,
 
 ### 6.2 The pipeline, step by step
 
-All commands run **from the toolkit directory** (`C:\repos\sneak-king-recomp\xboxrecomp`) with our venv's Python. The paths below are the ones this project uses.
+All commands run **from the toolkit directory** (`xboxrecomp\`) with the venv's Python. `$G` is the repo root.
 
 ```powershell
-$py = 'C:\repos\sneak-king-recomp\.venv\Scripts\python.exe'
-$G  = 'C:\repos\sneak-king-recomp'
+$G  = '..'
+$py = "$G\.venv\Scripts\python.exe"
 
 # 1. Extract the disc's game partition (handles the full redump image)
-& $py -m tools.xiso unpack $G\sneak-king-usa-dump-10-16-2026.iso -o $G\game
+& $py -m tools.xiso unpack $G\<your-dump>.iso -o $G\game
 
 # 2. Parse the XBE header; the JSON must sit next to the XBE
 & $py -m tools.xbe_parser $G\game\default.xbe --json $G\game\default_analysis.json
@@ -541,7 +541,7 @@ All facts in this section were measured on our dump.
 
 ### 8.1 Disc
 
-- The image is `sneak-king-usa-dump-10-16-2026.iso`, 7,825,162,240 bytes, a full redump-style image.
+- The image is 7,825,162,240 bytes, a full redump-style image.
 - The game partition is at offset `0x18300000` (XGD).
 - Game partition root:
 
@@ -697,7 +697,7 @@ The large share found only by boundary heuristics, and the 698 data-table pointe
 
 ## 9. Environment notes
 
-The state of this machine after Phase 0 setup:
+The development machine after Phase 0 setup:
 
 - **Compiler:** Visual Studio 2022 Community at `C:\Program Files\Microsoft Visual Studio\2022\Community`, with the Desktop C++ workload (MSVC v143, Windows SDK, CMake and Ninja bundled). Use a developer shell (`vcvars64.bat`) so `cl` and `ninja` are on PATH.
 - **Python:** The system Python 3.14.7 is managed by `uv` and refuses `pip install` (PEP 668, "externally-managed-environment"). The project uses a **venv at `.venv/`** (git-ignored) containing:
@@ -705,12 +705,12 @@ The state of this machine after Phase 0 setup:
   - pytest
   - pefile
   - numpy (pefile and numpy are needed by `tools/fusion` tests)
-- **Toolkit:** `C:\repos\sneak-king-recomp\xboxrecomp`, v0.14.0 (commit `eb0aa1d`). Libraries build in Release with Ninja + MSVC.
+- **Toolkit:** `xboxrecomp/`, v0.14.0 (commit `eb0aa1d`). Libraries build in Release with Ninja + MSVC.
 - **Toolkit tests:**
   - Without MSVC on PATH: 711 passed, 98 skipped, 3 failed.
   - Under `vcvars64`: `fpdiff` and the fuzz test pass, and the conformance run reports **6,351 vectors, 0 mismatches**.
-  - The conformance *corpus* stage fails with `PermissionError: [WinError 5] Access is denied` when it launches the freshly built `corpus_harness.exe` from `%TEMP%`. This machine blocks running new binaries from Temp. Redirecting `TMP`/`TEMP` to `C:\repos\sneak-king-recomp\xboxrecomp\build\conftmp` fixes it: the full suite then gives **805 passed, 7 skipped, 0 failed**. The command is in `CLAUDE.md`.
-- **Ghidra:** 12.1.4 at `C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921` (JDK 25 installed). The `ghidra-xbe` loader is not installed yet (Phase 1).
+  - The conformance *corpus* stage fails with `PermissionError: [WinError 5] Access is denied` when it launches the freshly built `corpus_harness.exe` from `%TEMP%`. This machine blocks running new binaries from Temp. Redirecting `TMP`/`TEMP` to `xboxrecomp\build\conftmp` fixes it: the full suite then gives **805 passed, 7 skipped, 0 failed**. The command is in `CLAUDE.md`.
+- **Ghidra:** 12.1.4 (JDK 25). The `ghidra-xbe` loader is not installed yet (Phase 1).
 - **xemu:** installed through winget for reference comparison. It needs **your own** console BIOS and MCPX boot ROM dumps, plus an HDD image, to run. Nothing in this repo provides those.
 - **Legal hygiene:** the ISO, extracted `game/`, `analysis/` and generated `src/recomp/gen/` are all git-ignored. Never commit or upload game data or derived disassembly.
 
@@ -761,7 +761,7 @@ The state of this machine after Phase 0 setup:
 ### Reading order
 
 1. **This report**, sections 1, 4 and 6.
-2. xboxrecomp `README.md`, `docs/GETTING_STARTED.md`, `docs/pipeline/01-06`, `docs/technical/memory-layout.md`, all in `C:\repos\sneak-king-recomp\xboxrecomp\docs`.
+2. xboxrecomp `README.md`, `docs/GETTING_STARTED.md`, `docs/pipeline/01-06`, `docs/technical/memory-layout.md`, all in `xboxrecomp/docs`.
 3. The **BLiNX 2 recomp README**, to see how a finished OG Xbox recomp was structured and tested.
 4. **xboxdevwiki**: the XBE, Kernel and Memory pages.
 5. The **Burnout 3** repo, for a real per-game layout (seeds, `main.c`, overrides).

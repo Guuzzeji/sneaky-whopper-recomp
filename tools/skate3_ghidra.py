@@ -17,7 +17,7 @@ import pyghidra
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 IMAGE = os.path.abspath(os.path.join(ROOT, "analysis", "rea", "skate3_default.exe"))
 PROJ_DIR = os.path.abspath(os.path.join(ROOT, "analysis", "ghidra_skate3"))
-GHIDRA = r"C:\Users\SandGames\Desktop\ghidra_12.1.4_PUBLIC_20260921\ghidra_12.1.4_PUBLIC"
+GHIDRA = os.environ.get("GHIDRA_INSTALL_DIR", "ghidra")
 BASE = 0x82000000
 LANG = "PowerPC:BE:64:A2ALT-32addr"
 

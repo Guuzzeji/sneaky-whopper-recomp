@@ -153,7 +153,7 @@ Go through **SDL/GL on native Windows/Linux first**: every web problem except th
 ## 6. W0 results (2026-10-17)
 The verdict is **go**. Spikes were built in `build-wasm-spike/`, `build-census/` and `build-fold/`, all gitignored.
 
-**1. Generated code under Emscripten.** Emscripten (emsdk latest, at `C:\repos\emsdk`) compiles all 59 gen files with `emcc -O2 -pthread` and **zero errors**.
+**1. Generated code under Emscripten.** Emscripten (emsdk latest) compiles all 59 gen files with `emcc -O2 -pthread` and **zero errors**.
 - About 3 minutes at 4 jobs; the slowest file (`recomp_0023.c`) takes 12 s.
 - 22 MB of wasm objects.
 - 14,050 functions. The largest is `sub_00296B63` at **188 KB**, 40x under the 7.6 MB body limit.

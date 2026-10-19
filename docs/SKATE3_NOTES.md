@@ -6,7 +6,7 @@ Facts gathered from the user's Skate 3 disc (Xbox 360, NTSC-U) for the skate jok
 
 | Item | Value |
 |---|---|
-| ISO | `skate-3-usa-x360-dump-10-17-26.iso` in the repo root. Its XDVDFS partition starts at `0x0FD90000`. `tools.xiso` reads it. |
+| ISO | Your own *Skate 3* (USA, 360) ISO in the repo root. Its XDVDFS partition starts at `0x0FD90000`. `tools.xiso` reads it. |
 | Unpacked | `skate3/` (103 files, 6.0 GB): `.\.venv\Scripts\python.exe -m tools.xiso unpack <iso> -o skate3`, run from the toolkit. |
 | `default.xex` | 6,615,040 bytes, SHA-1 `2f1e63fbdfc90a30381328c428437747ee91295b`. Title ID `0x454108E6`, media ID `0x5C087C2C`, version 3 / base version 3. Original name `sk83_na_f.self`, PE timestamp `0x4BAEE107` (2010-03-28). |
 | Title update | The disc build is unpatched. skate3recomp targets TU3 (`TU_12K2276_000000C000000.00000000000O3`), which isn't on the disc. The base image is fine for research. |
@@ -35,7 +35,7 @@ Result: a 0x1130000-byte image, base `0x82000000`, entry `0x82EB4F80` (`mflr r12
 ### Analysis tooling
 - **REA can't open it.** It rejects COFF machine `0x1F2`, and its raw mode has no PowerPC.
 - **Ghidra 12's PE loader** has no opinion for machine 498 either.
-- `tools/skate3_ghidra.py` loads the flat image with the BinaryLoader as `PowerPC:BE:64:A2ALT-32addr`, rebased to `0x82000000`. It seeds functions from `.pdata`: 8-byte entries `{BeginAddress, packed}`, with the function length in instructions at bits 8–29. Then it runs auto-analysis.
+- `tools/skate3_ghidra.py` needs PyGhidra and `GHIDRA_INSTALL_DIR` set to a Ghidra 12 install. It loads the flat image with the BinaryLoader as `PowerPC:BE:64:A2ALT-32addr`, rebased to `0x82000000`. It seeds functions from `.pdata`: 8-byte entries `{BeginAddress, packed}`, with the function length in instructions at bits 8–29. Then it runs auto-analysis.
   - Results: 33,653 seeds, 31,481 functions after analysis. The run takes about 10 minutes, and the project goes in `analysis/ghidra_skate3/`.
   - Queries take about 6 s each: `decomp <addr>...`, `xrefs <addr>...`, `str <text>...`.
 - **String xrefs** are found only where Ghidra resolved the `lis`/`addi` pair. Some strings, such as the gesture debug print, show 0 refs.

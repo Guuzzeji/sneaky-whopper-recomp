@@ -4,6 +4,8 @@
 
 *Burger King: Sneak King* (2006, Blitz Games) for the original Xbox, recompiled into native code. No emulator: every function of the game's `default.xbe` is lifted from x86 to C, then compiled for the host with a small model of the Xbox around it.
 
+Yes, this is a serious amount of engineering spent on a Burger King advergame. It's for the memes. :)
+
 <p align="center"><img src="docs/img/king.png" alt="The King on the title screen, running in the recompiled build" width="480"></p>
 
 One checkout builds two versions of the game:
@@ -11,7 +13,7 @@ One checkout builds two versions of the game:
 - **Windows** (Direct3D 9). This is the main version. It plays the whole game with keyboard and mouse or a pad. It adds widescreen, 360 HD textures, a debug overlay with cheats, and two joke modes.
 - **Web** (WebAssembly, in Chrome). This one is experimental. It boots, plays the movies and menus, and runs the levels with the same controls, widescreen and cheats.
 
-**This repo contains no game data.** You need a dump of your own disc. The ISO, the extracted files, the analysis and the lifted code all stay on your machine, and `.gitignore` covers them. For the same reason, don't host the web version publicly: its `.wasm` file holds the lifted game code.
+**This repo contains no game data.** You need a dump of your own disc. The ISO, the extracted files, the analysis and the lifted code all stay on your machine, and `.gitignore` covers them. 
 
 ## Contents
 
@@ -29,6 +31,9 @@ One checkout builds two versions of the game:
 - [Cheats and joke modes](#cheats-and-joke-modes)
 - [Troubleshooting](#troubleshooting)
 - [Docs](#docs)
+- [AI tools](#ai-tools)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## How it works
 
@@ -73,7 +78,7 @@ The build commands need MSVC on the `PATH`. Use one of these:
 ### 2. Get the code
 
 ```
-git clone <this repo> sneak-king-recomp
+git clone https://github.com/<owner>/sneak-king-recomp
 cd sneak-king-recomp
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install capstone pytest pefile numpy
@@ -161,12 +166,12 @@ The exe needs no settings. It finds `game\` by walking up from its own folder, o
 
 ### 5b. Build and run in the browser
 
-**1. Install the Emscripten SDK** next to the repo (the `web` preset looks in `C:\repos\emsdk`):
+**1. Install the Emscripten SDK** next to the repo, in `..\emsdk` (where the `web` preset looks). From the repo root:
 
 ```
-git clone https://github.com/emscripten-core/emsdk C:\repos\emsdk
-C:\repos\emsdk\emsdk install latest
-C:\repos\emsdk\emsdk activate latest
+git clone https://github.com/emscripten-core/emsdk ..\emsdk
+..\emsdk\emsdk install latest
+..\emsdk\emsdk activate latest
 ```
 
 If you install it somewhere else, add a `CMakeUserPresets.json` that inherits the `web` preset and sets `EMSDK`.
@@ -275,7 +280,28 @@ Both versions use the same layout.
 | `docs/RESEARCH.md`, `docs/P1_FINDINGS.md` | Background and findings about the game |
 | `docs/WEB_PORT_RESEARCH.md` | The web port's design and results |
 | `docs/MODS.md`, `docs/MW1_NOTES.md`, `docs/SKATE3_NOTES.md` | The joke modes |
+| `docs/FUNNY_CHEATS.md` | Remaining work on the joke modes |
 | `CLAUDE.md` | Working notes: every command, the `RECOMP_*` switches, debugging |
+
+## AI tools
+
+This project was built with [Claude Code](https://claude.com/claude-code), and `CLAUDE.md` holds its working notes. These add-ons help a lot:
+
+| Tool | What it does here | Install |
+|---|---|---|
+| [REA](https://www.npmjs.com/package/rea-agents) (Reverse Engineer Anything) | MCP server for decompiling, xrefs and callers. `CLAUDE.md` tells the agent to use it for every reverse-engineering question, on `analysis/rea/default_flat.exe` and the reference games. Needs Node.js and Ghidra 12 (`GHIDRA_INSTALL_DIR`). | `npx rea-agents setup` |
+| [Caveman](https://github.com/JuliusBrussee/caveman) | Makes Claude answer tersely, so long debugging sessions use fewer tokens. | `claude plugin marketplace add JuliusBrussee/caveman`<br>`claude plugin install caveman@caveman` |
+| [Ponytail](https://github.com/DietrichGebert/ponytail) | Pushes Claude to the smallest fix that works, which keeps the overrides and the toolkit patches small. | `claude plugin marketplace add DietrichGebert/ponytail`<br>`claude plugin install ponytail@ponytail` |
+
+Turn the plugins on in a session with `/caveman` and `/ponytail`.
+
+## Contributing
+
+Pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. The short version: never commit game data, and never edit `src/recomp/gen/` by hand.
+
+## License
+
+The project's own code and docs are under the [MIT License](LICENSE). The vendored toolkit (`xboxrecomp/`) and Dear ImGui (`third_party/imgui/`) keep their own licenses. The game is not covered: you must own it.
 
 ---
 

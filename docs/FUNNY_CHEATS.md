@@ -88,7 +88,7 @@ Joke-mode cheats in F1 > Cheats that borrow other games' mechanics. Every asset 
 
 ## 2. Skate mode (Skate 3 style)
 
-The disc dump is `skate-3-usa-x360-dump-10-17-26.iso` in the repo root, unpacked into `skate3/`. Findings are in `docs/SKATE3_NOTES.md`.
+The disc dump is your own *Skate 3* (360) ISO in the repo root, unpacked into `skate3/`. Findings are in `docs/SKATE3_NOTES.md`.
 
 **What is known so far:**
 - The reference recomp (mchughalex/skate3recomp, ReXGlue) has no hand-written skate code: board physics, flick-it and tricks are all lifted PowerPC.
