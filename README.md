@@ -78,8 +78,8 @@ The build commands need MSVC on the `PATH`. Use one of these:
 ### 2. Get the code
 
 ```
-git clone https://github.com/Guuzzeji/sneakking-recomp
-cd sneakking-recomp
+git clone https://github.com/Guuzzeji/sneaky-whopper-recomp
+cd sneaky-whopper-recomp
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install capstone pytest pefile numpy
 ```
