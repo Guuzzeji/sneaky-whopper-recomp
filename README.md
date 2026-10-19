@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/img/banner.svg" alt="Sneak King: static recompilation" width="100%"></p>
 
-# Sneak King Recomp: a native PC port of Burger King: Sneak King
+# A native PC port of Burger King: Sneak King
 
 *Burger King: Sneak King* (2006, Blitz Games) for the original Xbox, statically recompiled into a native Windows game and an experimental WebAssembly browser build. No emulator: every function of the game's `default.xbe` is lifted from x86 to C, then compiled for the host with a small model of the Xbox around it.
 
