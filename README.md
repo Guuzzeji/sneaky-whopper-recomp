@@ -1,8 +1,8 @@
 <p align="center"><img src="docs/img/banner.svg" alt="Sneak King: static recompilation" width="100%"></p>
 
-# Sneak King: static recompilation
+# Sneak King Recomp: a native PC port of Burger King: Sneak King
 
-*Burger King: Sneak King* (2006, Blitz Games) for the original Xbox, recompiled into native code. No emulator: every function of the game's `default.xbe` is lifted from x86 to C, then compiled for the host with a small model of the Xbox around it.
+*Burger King: Sneak King* (2006, Blitz Games) for the original Xbox, statically recompiled into a native Windows game and an experimental WebAssembly browser build. No emulator: every function of the game's `default.xbe` is lifted from x86 to C, then compiled for the host with a small model of the Xbox around it.
 
 Yes, this is a serious amount of engineering spent on a Burger King advergame. It's for the memes. :)
 
@@ -78,8 +78,8 @@ The build commands need MSVC on the `PATH`. Use one of these:
 ### 2. Get the code
 
 ```
-git clone https://github.com/<owner>/sneak-king-recomp
-cd sneak-king-recomp
+git clone https://github.com/Guuzzeji/sneakking-recomp
+cd sneakking-recomp
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install capstone pytest pefile numpy
 ```
