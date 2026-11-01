@@ -63,7 +63,7 @@ If you just want to play, one command builds the game from your own disc image.
 2. Make an ISO of your own disc ([Dump the disc](#3-dump-the-disc)).
 3. Build:
    ```
-   sneakking build path\to\your-disc.iso
+   ./sneakking.cmd build path\to\your-disc.iso
    ```
 
 It asks a few questions first (graphics, resolution, widescreen, HD textures, mouse speed, volume, vsync), then runs on its own for about half an hour:
