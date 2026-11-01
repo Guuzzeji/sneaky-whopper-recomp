@@ -402,8 +402,11 @@ void xbox_kernel_init(void)
     InitializeCriticalSection(&g_log_cs);
     g_log_cs_init = TRUE;
 
-    /* Try to open log file, fall back to stderr */
-    g_log_file = fopen("xbox_kernel.log", "w");
+    /* Try to open log file (RECOMP_KERNEL_LOG moves it), fall back to stderr */
+    {
+        const char *log_path = getenv("RECOMP_KERNEL_LOG");
+        g_log_file = fopen(log_path && *log_path ? log_path : "xbox_kernel.log", "w");
+    }
 
     /* Set log level from environment variable if present */
     const char* log_env = getenv("XBOX_LOG_LEVEL");

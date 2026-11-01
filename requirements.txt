@@ -1,0 +1,4 @@
+# What `sneakking build` needs: capstone for the lift, numpy for the HD textures.
+# Developer extras (tests, Ghidra, PE tools): pip install pytest pefile pyghidra
+capstone>=5.0,<6
+numpy>=1.26

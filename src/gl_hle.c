@@ -182,7 +182,12 @@ static int ctx_create(void)
         fprintf(stderr, "[GL] EGL context: error 0x%x\n", eglGetError());
         return 0;
     }
-    eglSwapInterval(s_egl_dpy, 0);
+    /* RECOMP_VSYNC=1 waits for the display's refresh at each present (no
+     * tearing); off by default, as the game paces itself by its vblank. */
+    {
+        const char *vs = getenv("RECOMP_VSYNC");
+        eglSwapInterval(s_egl_dpy, vs && *vs && strcmp(vs, "0") != 0);
+    }
     /* ANGLE names DXT1/3/5 three ways; GL_EXT_texture_compression_s3tc where it can. */
     s_s3tc = has_ext("GL_EXT_texture_compression_s3tc")
           || (has_ext("GL_EXT_texture_compression_dxt1") && has_ext("GL_ANGLE_texture_compression_dxt5"));

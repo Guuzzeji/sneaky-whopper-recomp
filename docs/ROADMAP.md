@@ -277,6 +277,19 @@ Our shaders are made at run time (one per title vertex program and per fixed-fun
 - [ ] RenderDoc capture of a frame on `RECOMP_GFX=d3d11` and `vulkan` (ANGLE's calls) to replace the DXVK route for render bugs.
 - [ ] Bump env-map stages and FVF vertex blending, if a later level uses them (the warnings say so).
 
+## P11 — One-command build for players
+
+A fresh clone and the user's ISO become a playable Windows game with one command, no developer setup.
+
+- [x] `main.c` calls the entry point as `sub_000637AA` and is an `--exclude-manual`, so the lift links without `analysis/names_combined.json` (which is not in git).
+- [x] `settings.ini` at the game root: `KEY=value` sets `RECOMP_KEY` unless the environment has it (`main.c` `load_settings_ini`).
+- [x] `sneakking.cmd` + `tools/sneakking.py`: Python and VS 2022 Build Tools through winget (or links), prebuilt ANGLE, XBE SHA-1 check, the pipeline with resumable steps, the `release` build, HD textures from the disc's 360 packages, a portable `dist\SneakKing\`, and settings prompts.
+- [x] `requirements.txt`; `tools/build_angle.cmd` pinned to the release zip's commit and finds Git's `sed` anywhere.
+- [x] Player settings `VOLUME` (XAudio2 mastering voice) and `VSYNC` (swap interval).
+- [x] The log in `logs\sneakking.log` (no console unless `CONSOLE=1`), headed by the run's exe, Windows version and switches; a crash message box points at it.
+- [x] Quit without Alt+F4: F10 or Escape held a second opens a quit dialog (`overlay.cpp`), also a button on the F1 overlay.
+- [x] Publish the ANGLE zip as the `angle-feebf60` GitHub release (the URL and SHA-256 in `tools/sneakking.py`).
+
 ## W — Web port (experimental, merged into main)
 
 Research, pros and cons, and decisions: [WEB_PORT_RESEARCH.md](WEB_PORT_RESEARCH.md). Chrome only, built and served locally from the user's own disc. Toolkit work goes in the vendored `xboxrecomp/`.

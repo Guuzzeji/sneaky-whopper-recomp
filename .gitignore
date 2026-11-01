@@ -18,6 +18,7 @@ src/recomp/gen/
 build/
 build-*/
 out/
+dist/
 saves/
 .vs/
 *.pdb
@@ -35,9 +36,6 @@ nv2a_shaders.bin
 
 # Shooter mode loadout, saved at run time
 shooter.ini
-
-# Side build trees (web port and size experiments)
-build-*/
 
 # ANGLE build output (tools/build_angle.cmd)
 third_party/angle/

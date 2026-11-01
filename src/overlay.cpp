@@ -2,6 +2,7 @@
  *
  *   F1  the panels (renderer, health, cheats); the mouse and keys go to them
  *   F2  a frame-rate line in the corner
+ *   F10, or Escape held a second: the quit dialog (Enter quits, Escape cancels)
  *
  * The framebuffer window belongs to the toolkit's window thread, and ImGui
  * is not thread-safe, so the window hook only queues messages; present()
@@ -34,7 +35,13 @@ typedef int (*xbox_fb_msg_hook_t)(void *hwnd, unsigned msg, uintptr_t wp, intptr
 void xbox_FramebufferWindowSetMsgHook(xbox_fb_msg_hook_t fn);
 }
 
-static volatile LONG s_open, s_hud;
+static volatile LONG s_open, s_hud, s_quit;
+static ULONGLONG s_esc_down;          /* when Escape went down; 0 when up */
+
+/* The quit dialog: F10 or Escape held a second. An Xbox game has no Quit in
+ * its menus, and in play the mouse is locked away from the window's X. */
+static void quit_open(void)  { InterlockedExchange(&s_quit, 1); mkb_set_suspended(1); }
+static void quit_close(void) { InterlockedExchange(&s_quit, 0); mkb_set_suspended(s_open); }
 
 /* -- Window messages: queued on the window thread ---------------------------- */
 
@@ -51,11 +58,34 @@ static int msg_hook(void *h, unsigned m, uintptr_t w, intptr_t l)
         SetCursor(NULL);
         return 1;
     }
-    if (m == WM_KEYDOWN && !(l & (1 << 30))) {          /* not a repeat */
+    bool down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN, repeat = (l & (1 << 30)) != 0;
+    if (down && w == VK_F10) {                          /* a system key: no menu mode */
+        if (!repeat)
+            s_quit ? quit_close() : quit_open();
+        return 1;
+    }
+    if (s_quit && down && (w == VK_RETURN || w == VK_ESCAPE)) {
+        if (w == VK_RETURN)
+            PostMessageA((HWND)h, WM_CLOSE, 0, 0);       /* the window's own close: exit */
+        else if (!repeat)                               /* not the hold that opened it */
+            quit_close();
+        return 1;
+    }
+    if (w == VK_ESCAPE) {                               /* a press still reaches the game */
+        if (m == WM_KEYUP)
+            s_esc_down = 0;
+        else if (m == WM_KEYDOWN && !repeat)
+            s_esc_down = GetTickCount64();
+        else if (m == WM_KEYDOWN && s_esc_down && GetTickCount64() - s_esc_down >= 1000) {
+            s_esc_down = 0;
+            quit_open();
+        }
+    }
+    if (m == WM_KEYDOWN && !repeat) {
         if (w == VK_F1) {
             LONG open = !s_open;
             InterlockedExchange(&s_open, open);
-            mkb_set_suspended(open);
+            mkb_set_suspended(open || s_quit);
             return 1;
         }
         if (w == VK_F2) {
@@ -63,9 +93,9 @@ static int msg_hook(void *h, unsigned m, uintptr_t w, intptr_t l)
             return 1;
         }
     }
-    if (!s_open)
+    if (!s_open && !s_quit)
         return 0;
-    bool key = m >= WM_KEYFIRST && m <= WM_KEYLAST;
+    bool key =m >= WM_KEYFIRST && m <= WM_KEYLAST;
     bool mouse = m >= WM_MOUSEFIRST && m <= WM_MOUSELAST;
     if (!key && !mouse && m != WM_SETFOCUS && m != WM_KILLFOCUS)
         return 0;
@@ -515,7 +545,7 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
     shooter_hud(&sh);
     SkateHud kh;
     skate_hud(&kh);
-    if (!s_open && !s_hud && !sh.live && !kh.live)
+    if (!s_open && !s_hud && !s_quit && !sh.live && !kh.live)
         return;
     if (!ready) {
         IMGUI_CHECKVERSION();
@@ -557,6 +587,26 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
             if (ImGui::BeginTabItem("Cheats")) { panel_cheats(gi); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }
+        ImGui::Separator();
+        if (ImGui::Button("Quit game"))
+            quit_open();
+        ImGui::End();
+    }
+    if (s_quit) {
+        const ImVec2 size = ImGui::GetIO().DisplaySize;
+        ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowFocus();
+        ImGui::Begin("##quit", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize
+                     | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
+        ImGui::SetWindowFontScale(size.y >= 900 ? 2.0f : 1.5f);
+        ImGui::Text("Quit Sneak King?");
+        ImGui::Spacing();
+        if (ImGui::Button("Quit (Enter)"))
+            PostMessageA(hwnd, WM_CLOSE, 0, 0);
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel (Esc)"))
+            quit_close();
         ImGui::End();
     }
     ImGui::EndFrame();
