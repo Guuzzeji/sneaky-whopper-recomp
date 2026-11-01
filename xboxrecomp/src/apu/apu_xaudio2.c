@@ -101,6 +101,9 @@ int xa2_init(void)
         fprintf(stderr, "[XA2] CreateMasteringVoice failed: 0x%08lX\n", hr);
         goto fail;
     }
+    /* RECOMP_VOLUME: master volume, 0..100 percent (default 100). */
+    IXAudio2MasteringVoice_SetVolume(g_xa2_master,
+        xa2_env_int("RECOMP_VOLUME", 100, 0, 100) / 100.0f, XAUDIO2_COMMIT_NOW);
 
     wfx.wFormatTag      = WAVE_FORMAT_PCM;
     wfx.nChannels       = XA2_CHANNELS;
