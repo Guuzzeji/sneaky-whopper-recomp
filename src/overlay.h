@@ -1,5 +1,5 @@
 /* Debug overlay (Dear ImGui, src/overlay.cpp): F1 opens the panels, F2 the
- * frame-rate line. Drawn by d3d9_hle.c's present() on the game thread. */
+ * frame-rate line. Drawn by the renderer's present() on the game thread. */
 #ifndef SNEAKKING_OVERLAY_H
 #define SNEAKKING_OVERLAY_H
 
@@ -9,12 +9,13 @@
 extern "C" {
 #endif
 
-/* d3d9_hle.c: per-frame counters (the last presented frame) and caches. */
+/* gl_hle.c: per-frame counters (the last presented frame) and caches. */
 typedef struct {
     unsigned draws, prims, states, tex_creates, vs_compiles, rt_uploads;
     unsigned rts, rts_max, texs, texs_max, vss, vss_max, vdecls, vdecls_max;
     unsigned scale, sc_w, sc_h, frame;
     unsigned hd_textures;             /* RECOMP_HD_TEX replacements so far */
+    const char *api;                  /* the host renderer, e.g. ANGLE's GL_RENDERER */
 } OverlayD3dStats;
 
 /* recomp_manual.c: what the game is doing, read from guest memory. */

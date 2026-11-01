@@ -10,7 +10,7 @@ Yes, this is a serious amount of engineering spent on a Burger King advergame. I
 
 One checkout builds two versions of the game:
 
-- **Windows** (Direct3D 9). This is the main version. It plays the whole game with keyboard and mouse or a pad. It adds widescreen, 360 HD textures, a debug overlay with cheats, and two joke modes.
+- **Windows** (Direct3D 11, Vulkan or OpenGL, through ANGLE). This is the main version. It plays the whole game with keyboard and mouse or a pad. It adds widescreen, 360 HD textures, a debug overlay with cheats, and two joke modes.
 - **Web** (WebAssembly, in Chrome). This one is experimental. It boots, plays the movies and menus, and runs the levels with the same controls, widescreen and cheats.
 
 **This repo contains no game data.** You need a dump of your own disc. The ISO, the extracted files, the analysis and the lifted code all stay on your machine, and `.gitignore` covers them. 
@@ -43,7 +43,7 @@ One checkout builds two versions of the game:
    - the audio processor
    - USB pads
    - just enough of the GPU for the game's graphics library to keep going
-3. **Graphics.** The game's Direct3D 8 calls are intercepted and replayed on the host: Direct3D 9 on Windows (`src/d3d9_hle.c`), WebGL2 in the browser (`src/gl_hle.c`). The NV2A vertex programs are translated to HLSL or GLSL.
+3. **Graphics.** The game's Direct3D 8 calls are intercepted and replayed on OpenGL ES 3 (`src/gl_hle.c`), with D3D8's fixed function and the NV2A vertex programs turned into GLSL. In the browser that is WebGL2. On Windows it runs on [ANGLE](https://chromium.googlesource.com/angle/angle), which translates it to Direct3D 11 (the default), Vulkan or desktop OpenGL: set `RECOMP_GFX=d3d11`, `vulkan` or `gl`.
 4. **Host.**
    - Windows: `src/main.c`, with a Win32 window, raw input and the bindings in `mkb.ini`.
    - Web: `src/main_web.c` and `src/web_host.c`, with a canvas and DOM input. Game files are fetched over HTTP as the game reads them.
@@ -134,7 +134,7 @@ $a  = "..\analysis"
     --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi `
     --gen-dir ..\src\recomp\gen --game-name "Sneak King" `
     --exclude-manual ..\src\recomp_manual.c `
-    --exclude-manual ..\src\d3d9_hle.c `
+    --exclude-manual ..\src\gl_hle.c `
     --exclude-manual ..\src\d3d_hle_shared.h `
     --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
 cd ..
@@ -148,7 +148,13 @@ You now have `game/`, `analysis/` and `src/recomp/gen/`, all gitignored.
 
 ### 5a. Build and run on Windows
 
-From the repo root, in a VS developer prompt:
+From the repo root, in a VS developer prompt. First build ANGLE, once (it needs git, about 3 GB and half an hour; the source goes to `..\angle` and the result to `third_party\angle\`):
+
+```
+tools\build_angle.cmd
+```
+
+Then the game:
 
 ```
 cmake --preset release
@@ -205,13 +211,13 @@ The log under the picture shows boot progress, and the **Hide log** button folds
 | `RECOMP_WIDESCREEN=0` | 4:3 instead of 16:9 |
 | `RECOMP_HD_TEX=0` | the original Xbox textures instead of the 360 HD ones |
 | `RECOMP_SCALE=1` | render at 640x480 (the default is 2x) |
-| `RECOMP_D3D9_STATS=1` | log frames per second |
+| `RECOMP_D3D9_STATS=1` | log frames per second (the name is historical) |
 
 ### Optional extras
 
 - **360 HD textures.** `tools/xen_tex.py <pkg.xbp> <pkg.xen> -o game/hd` converts the 360 version's textures. Both builds use `game/hd` when it exists.
 - **Joke modes** (Windows only). Shooter mode needs your own *Call of Duty 4* PC install, and skate mode needs your own *Skate 3* dump. `docs/MODS.md` has the extraction steps.
-- **Debugging the web path natively.** `cmake --preset gl && cmake --build --preset gl` builds `build-gl\sneakking_recomp.exe`: the web renderer and memory layout as a Windows exe, so you can use the Visual Studio debugger.
+- **Debugging the web path natively.** `cmake --preset gl && cmake --build --preset gl` builds `build-gl\sneakking_recomp.exe`: the web memory layout as a Windows exe, so you can use the Visual Studio debugger.
 
 ## Controls
 
@@ -248,7 +254,7 @@ Both versions use the same layout.
 | `release` | `build\sneakking_recomp.exe` | The Windows game |
 | `relwithdebinfo` | `out\build\relwithdebinfo\` | The same, with a PDB for debugging |
 | `web` | `build-web\sneakking_recomp.{js,wasm}` | The browser build |
-| `gl` | `build-gl\sneakking_recomp.exe` | The web build's renderer and memory layout on Windows |
+| `gl` | `build-gl\sneakking_recomp.exe` | The web build's memory layout on Windows |
 
 ## Cheats and joke modes
 
@@ -263,6 +269,7 @@ Both versions use the same layout.
 | Problem | Fix |
 |---|---|
 | `cl`, `cmake` or `ninja` not found | Use the VS developer prompt or the `vcvars64.bat` wrapper (step 1). |
+| `ANGLE not found` when configuring | Run `tools\build_angle.cmd` first. |
 | Link fails with unresolved `sub_X_gen` | The lift missed an `--exclude-manual` file. Run step 4.4 again with all three. |
 | The web page says "Not cross-origin isolated" | Open it through `tools\serve.py`, not as a file or from another server. |
 | The web build hangs on boot | The lift ran without the `--mmio-range` arguments. Run step 4.4 again and rebuild. |

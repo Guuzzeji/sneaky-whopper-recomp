@@ -28,7 +28,7 @@
     {
       "name": "release",
       "displayName": "Release",
-      "description": "The build the docs use: build\\sneakking_recomp.exe",
+      "description": "The build the docs use: build\\sneakking_recomp.exe. GL ES 3 on ANGLE (tools\\build_angle.cmd); RECOMP_GFX=d3d11|vulkan|gl picks the back end at run time.",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
@@ -47,13 +47,12 @@
     },
     {
       "name": "gl",
-      "displayName": "Release, GL renderer (web layout, native)",
-      "description": "The web port's renderer and memory layout on Windows, for debugging it natively: build-gl\\sneakking_recomp.exe. Needs the lifted code made with --mmio-range.",
+      "displayName": "Release, web memory layout (native)",
+      "description": "The web build's compact memory layout on Windows, for debugging the web path natively: build-gl\\sneakking_recomp.exe. Needs the lifted code made with --mmio-range.",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build-gl",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "RECOMP_RENDERER": "gl",
         "RECOMP_COMPACT_MEM": "ON"
       }
     },
@@ -72,7 +71,6 @@
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "RECOMP_RENDERER": "gl",
         "RECOMP_COMPACT_MEM": "ON"
       }
     }
@@ -92,7 +90,7 @@
     },
     {
       "name": "gl",
-      "displayName": "Release, GL renderer",
+      "displayName": "Release, web memory layout (native)",
       "configurePreset": "gl",
       "jobs": 2
     },

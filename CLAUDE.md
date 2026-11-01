@@ -23,8 +23,9 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
 | `mw1/` | The user's CoD4: Modern Warfare PC install (`iw3sp.exe`, `zone/english/*.ff`, `main/iw_*.iwd`). Reference for the shooter joke mode; gitignored. |
 | `analysis/{disasm,func_id,abi}/` | Pipeline output (functions, xrefs, labels, strings, identified functions, ABI). |
 | `src/main.c`, `src/recomp_manual.c` | Host entry point and manual overrides. Made from the xboxrecomp `templates/new-game`. |
-| `src/d3d9_hle.c` | The game's Xbox D3D8 mapped onto host Direct3D 9: wrapped entry points, state translation, textures, render targets, vertex programs, present. |
-| `src/overlay.cpp`, `third_party/imgui/` | F1 debug overlay (D3D9, health, cheats) on vendored Dear ImGui 1.91.8. Game-side helpers (cheats, mouse camera, menu hover) are in `recomp_manual.c`. |
+| `src/gl_hle.c` | The renderer: the game's Xbox D3D8 mapped onto GL ES 3 (wrapped entry points, fixed function as generated GLSL, textures, render targets, vertex programs, present). On Windows through ANGLE (D3D11, Vulkan or desktop GL), in the browser on WebGL2. |
+| `tools/build_angle.cmd`, `third_party/angle/` | Builds ANGLE (gn, D3D11 + Vulkan + GL back ends) from `..\angle` into `third_party/angle/` (bin, lib, include; gitignored). |
+| `src/overlay.cpp`, `third_party/imgui/` | F1 debug overlay (renderer stats, health, cheats) on vendored Dear ImGui 1.91.8, with its OpenGL 3 (ES 3) and DX9 back ends. Game-side helpers (cheats, mouse camera, menu hover) are in `recomp_manual.c`. |
 | `tools/cod4_extract.py`, `tools/cod4_anim.py`, `src/cod4_anim.c`, `src/mods_mesh.c`, `src/cod4_sound.c` | Shooter joke mode (P9), CoD4 in third person: guns (OBJ, DDS, `weapon.ini`, WAVs) and player animations retargeted onto the King, extracted from `mw1/` into `game/mods/`; the animation player, the world-space gun/flash/tracer pass and the gun sounds. The gameplay hooks are in `recomp_manual.c`; see `docs/MODS.md`, `docs/MW1_NOTES.md`. |
 | `src/skate.c` | Skate joke mode: board physics on the King's physics controller, flick-it on the mouse, tricks, bails, the stance on his bones, camera follow, synthesised sounds. The board is drawn by `mods_mesh.c`. See `docs/MODS.md`. |
 | `skate3/`, `tools/xex_to_pe.py`, `tools/lzx_cli.c`, `tools/skate3_ghidra.py`, `tools/skate3_big.py`, `tools/skate3_attrib.py`, `tools/skate3_extract.py`, `tools/skate3_anim.py` | Skate joke mode research and assets: the unpacked 360 disc; XEX to PE (AES + LZX through libmspack); headless Ghidra queries; EB BIG archives with RefPack; the AttribSys tuning DB; Skate 3 sounds (through vgmstream) and animations (through the user's checkout of chasmlol/skate-3-trick-toolkit) into `game/mods/skate3/`. The retarget step shared with CoD4 is `tools/king_retarget.py`. See `docs/SKATE3_NOTES.md`. |
@@ -46,10 +47,11 @@ The work uses the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit.
   - 13,650 functions after the P2 seeds (13,318 in P1; 10,554 in `.text`)
   - 2,345 thiscall functions (C++)
   - 698 function pointers in data tables
-- D3D8 (non-LTCG) is statically linked. **Graphics path: D3D8 HLE on Direct3D 9** (`src/d3d9_hle.c`). It replaced the NV2A pushbuffer executor, the D3D11 back end and the software rasteriser; see `docs/P1_FINDINGS.md` §3. D3D9 is the only renderer: don't reintroduce another one.
-  - The game's D3D entry points are wrapped (`sub_X` → `hle_*`). Setters run the lifted body and mirror into D3D9; draws, Clear and the present are replaced.
+- D3D8 (non-LTCG) is statically linked. **Graphics path: D3D8 HLE on GL ES 3 through ANGLE** (`src/gl_hle.c`; P10 in `docs/ROADMAP.md`). `RECOMP_GFX=d3d11` (default), `vulkan` or `gl` picks ANGLE's back end at startup. It replaced D3D8 HLE on Direct3D 9 (`src/d3d9_hle.c`, deleted once P10 verified parity; in git history), which replaced the NV2A pushbuffer executor, the D3D11 back end and the software rasteriser (`docs/P1_FINDINGS.md` §3). One renderer: don't add a second host API; ANGLE is how we reach D3D11/Vulkan/GL.
+  - The game's D3D entry points are wrapped (`sub_X` → `hle_*`). Setters run the lifted body and mirror the state; draws, Clear and the present are replaced. GL ES has no fixed function: `gl_hle.c` generates GLSL per state key (texture stages, lighting, fog, alpha test).
+  - Vertex uploads: one `glBufferData` per draw. Don't map a ring buffer with `GL_MAP_UNSYNCHRONIZED_BIT`: ANGLE's D3D11 back end syncs its whole staging copy on every map, and the first level fell from 30 to 11 fps.
   - Render and texture-stage state are read from D3D's guest arrays at each draw: `D3D_g_RenderState` `0x20D090` (XDK 5849 indices) and `D3D_g_DeferredTextureState` `0x20CE90`. The current render target and depth surface are at `device+0x1A04` and `device+0x1A08`.
-  - Vertex programs: NV2A microcode is translated to `vs_2_0` HLSL, decoded the way the toolkit's `nv2a_vsh_interp.c` does. `SetVertexShaderConstant1/4/NotInline` take the hardware register (0..191), and NotInline's count is in dwords.
+  - Vertex programs: NV2A microcode is translated to GLSL ES 3.00, decoded the way the toolkit's `nv2a_vsh_interp.c` does. `SetVertexShaderConstant1/4/NotInline` take the hardware register (0..191), and NotInline's count is in dwords.
   - The lifted D3D still writes a pushbuffer. Nothing executes it: the toolkit's NV2A model moves DMA_GET to PUT, and `xbox_Nv2aMirrorFence` keeps D3D's semaphore at its time stamp, so fence waits return.
   - Pixel shaders (register combiners) are not translated yet. The title creates two; none was bound in the menus or the first level.
 - Applied function names carry a prefix: `xdk_` for XbSymbolDatabase names and `crt_` for Ghidra FidDb names. Without it, XDK names collide with toolkit runtime symbols.
@@ -82,15 +84,15 @@ Run these from `xboxrecomp\`, with `$py` set to `..\.venv\Scripts\python.exe`, `
 & $py tools\ghidra_naming\merge_names.py --names-json $a\names_combined.json --functions-json $a\disasm\functions.json --apply   # after disasm, before recomp
 & $py -m tools.func_id $x --functions $a\disasm\functions.json --strings $a\disasm\strings.json --xrefs $a\disasm\xrefs.json -o $a\func_id
 & $py -m tools.abi_analysis $x --disasm-dir $a\disasm --func-id-dir $a\func_id --output-dir $a\abi
-& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir ..\src\recomp\gen --game-name "Sneak King" --exclude-manual ..\src\recomp_manual.c --exclude-manual ..\src\d3d9_hle.c --exclude-manual ..\src\d3d_hle_shared.h --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
+& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir ..\src\recomp\gen --game-name "Sneak King" --exclude-manual ..\src\recomp_manual.c --exclude-manual ..\src\gl_hle.c --exclude-manual ..\src\d3d_hle_shared.h --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
 ```
 
 `d3d_hle_shared.h` must be an `--exclude-manual` too: it holds the `extern void sub_X_gen(void);` declarations that tell the lifter which D3D bodies to emit as `sub_X_gen`. Without it the link fails with about 35 unresolved `sub_X_gen`. The three `--mmio-range` sections (D3D, DSOUND, XPP) reach hardware registers through explicit calls instead of page traps, which the web port needs (`docs/WEB_PORT_RESEARCH.md`). `-DRECOMP_COMPACT_MEM=ON` builds the web memory layout natively.
 
 Build from the repo root inside the vcvars wrapper. Keep parallelism low, because the generated files are huge. One `src/recomp/gen/` serves every target. Pick the target with a `CMakePresets.json` preset (`docs/BUILDING.md` covers each one):
-- `release`: the Windows game on D3D9, in `build\sneakking_recomp.exe`. This is the main build.
+- `release`: the Windows game on ANGLE, in `build\sneakking_recomp.exe`. This is the main build. Run `tools\build_angle.cmd` once first (about 3 GB and half an hour; it points Chromium's pinned Windows SDK at the newest installed one). The build copies `libEGL.dll`, `libGLESv2.dll`, `d3dcompiler_47.dll` and ANGLE's own `vulkan-1.dll` beside the exe.
 - `relwithdebinfo`: the same build, optimised, with a PDB, in `out\build\relwithdebinfo`. An unoptimised build of the generated code is too slow to play.
-- `gl`: the web port's GL renderer and compact memory on Windows, in `build-gl\`, for debugging the web path natively.
+- `gl`: the web port's compact memory layout on Windows, in `build-gl\`, for debugging the web path natively.
 - `web`: WebAssembly, in `build-web\`. It needs emsdk (`EMSDK`, default `..\emsdk` next to the repo); `tools\web_build.cmd` wraps it.
 
 ```
@@ -103,16 +105,16 @@ The exe finds the repo root itself: when `game\default.xbe` is not in the workin
 
 `main.c` turns on everything a normal run needs, so the exe runs with no switches set:
 - `RECOMP_AC97_READY`: without it, DirectSound init fails and the game shuts itself down.
-- `RECOMP_FB_WINDOW`: the window D3D9 presents into. Without it, nothing is visible.
+- `RECOMP_FB_WINDOW`: the window the renderer presents into. Without it, nothing is visible.
 
 It also turns these on. Set any switch to `0` to turn it off:
 - `RECOMP_VBLANK`: the XMV player times frames by vblank.
 - `RECOMP_USB` and `RECOMP_MKB`: the pad on the emulated OHCI bus, and keyboard and mouse as a pad on port 0 (raw input, toolkit `src/input/mkb_input.c`). The bindings are in `mkb.ini` at the repo root (`RECOMP_MKB_INI` moves it): WASD move, mouse camera, Shift run, left click or Space A, right click or Q B, E Y, wheel zoom, F first person, Escape or P START (pause), arrows and Enter for menus. The mouse is locked (hidden, kept inside the window) only while the King is in play, which is when the game reads the camera stick (`game_in_play`); menus, the pause menu, loading and the title screens free it. F9 releases it in play, a click takes it back. Closing the window ends the process. `RECOMP_MKB=0` falls back to the keyboard-only `RECOMP_KEYBOARD` pad.
 - `RECOMP_HEAP_RECLAIM`: reuse freed contiguous memory. Without it the movies run the arena dry.
-- `RECOMP_SCALE=N` (1 to 8, default 2): D3D9 render targets at N times the guest's 640x480, shown through a swap chain on the framebuffer window.
+- `RECOMP_SCALE=N` (1 to 8, default 2): render targets at N times the guest's 640x480, blitted to the framebuffer window.
 - `RECOMP_WIDESCREEN`: 16:9, anamorphic. The guest still draws 640x480: the camera FOV setter (`0x12CA70`) gets a hor+ FOV and the 2D ortho (`0x30FB70`, from `0x1223A0`) is squeezed by 3/4, so the HUD stays 4:3 and centred; the present stretches to 16:9. Movies stretch.
 
-Keys: F1 opens the debug overlay (D3D9 stats, health, cheats: unlock levels, warp to a level), F2 shows a frame-rate line, F9 releases the mouse. The mouse turns the camera directly and points at menu options.
+Keys: F1 opens the debug overlay (renderer stats, health, cheats: unlock levels, warp to a level), F2 shows a frame-rate line, F9 releases the mouse. The mouse turns the camera directly and points at menu options.
 
 `main.c` also calls `timeBeginPeriod(1)`. Without it the APU clock oversleeps and audio underruns.
 
@@ -123,9 +125,10 @@ Other useful switches:
 - `RECOMP_PEEK=0xVA,...`: reads guest dwords.
 - `RECOMP_PAD_LIVE=<file>`: each line appended to the file is a pad press (`start:200`, `down`, `a`, `b`). `RECOMP_PAD_SCRIPT=<ms>:<button>,...` is the same on a timeline. With `RECOMP_D3D9_DUMP=<prefix>` and `RECOMP_D3D9_DUMP_EVERY=<presents>` (BMPs box-filtered to 640x480), this drives the menus with no one at the keyboard. START skips the movies.
 - `RECOMP_APU_TRACE=1`: per-voice audio stats once a second. `RECOMP_AUDIO_WAV=<path>` records the output.
-- `RECOMP_D3D9_STATS=1`: presents per second.
+- `RECOMP_GFX=d3d11|vulkan|gl`: ANGLE's back end (default `d3d11`). The F1 overlay's Renderer tab and the log's first `[GL]` line name the one running.
+- `RECOMP_D3D9_STATS=1`: presents per second (either renderer; the name is historical).
 - `RECOMP_D3D_TRACE=N`: logs the first N D3D calls with their register and stack arguments; `RECOMP_D3D_TRACE_ONLY=Name,Name` keeps just those.
-- `RECOMP_D3D9_DUMP_VSH=<dir>`: writes each translated vertex program as HLSL.
+- `RECOMP_GL_DUMP_SHADERS=<dir>`: writes each generated GLSL program.
 - `RECOMP_MOUSE_DEG=f`: camera degrees per mouse count (default 0.08). `RECOMP_MOUSE_TRACE=1` logs the mouse counts taken each game frame.
 - `RECOMP_SHOOTER=<primary>,<sidearm>`, `RECOMP_SHOOTER_VOL`, `RECOMP_TPS_DIST`, `RECOMP_SHOOT_TRACE=1`, `RECOMP_SHOOT_DEBUG=1`: shooter mode (`docs/MODS.md`).
 - `RECOMP_SKATE=1`, `RECOMP_SKATE_DEBUG=1`, `RECOMP_SKATE_BOARD=f`, `RECOMP_SKATE_POSE=...`, `RECOMP_SKATE_ORBIT=deg/s`, `RECOMP_SKATE_MISSIONS=1`, `RECOMP_SKATE_STARTLE=r`: skate mode (`docs/MODS.md`).
@@ -137,9 +140,9 @@ The toolkit in `xboxrecomp/` carries local patches that are not upstream: the cp
 ## Web build (experimental)
 The same game in Chrome as WebAssembly: `docs/WEB_PORT_RESEARCH.md` (research, decisions, results) and the W phases in `docs/ROADMAP.md`. Getting started: `docs/BUILDING.md`.
 - Emscripten SDK in `..\emsdk` next to the repo. `tools\web_build.cmd` (the `web` preset) builds `build-web\sneakking_recomp.{js,wasm}`; `.venv\Scripts\python.exe tools\serve.py` serves `web/index.html`, the build and `game/` on http://localhost:8080/ (COOP/COEP, range requests, generated `game/manifest.txt`). Local only: the build contains lifted game code, so it is never hosted.
-- `src/main_web.c` (boot, WasmFS fetch mount), `src/web_host.c` (`mkb.ini`'s keyboard and mouse bindings, menu pointer, pointer lock in play), `src/gl_hle.c` (the GL ES 3 / WebGL2 renderer; natively `-DRECOMP_RENDERER=gl`), `src/d3d_hle_shared.h` (guest side shared with `d3d9_hle.c`). Toolkit: `apu_web.c`, compact memory (`XBOX_COMPACT_MEM`, `xbox_GuestPtr`), explicit MMIO (`xbox_MmioRead/Write`).
+- `src/main_web.c` (boot, WasmFS fetch mount), `src/web_host.c` (`mkb.ini`'s keyboard and mouse bindings, menu pointer, pointer lock in play), `src/gl_hle.c` (the renderer, WebGL2 here), `src/d3d_hle_shared.h` (its guest side). Toolkit: `apu_web.c`, compact memory (`XBOX_COMPACT_MEM`, `xbox_GuestPtr`), explicit MMIO (`xbox_MmioRead/Write`).
 - The page sets `RECOMP_WIDESCREEN` (on unless `?RECOMP_WIDESCREEN=0`) and sizes both canvases to 16:9 or 4:3 before the game takes `#canvas`. The log panel can be hidden (remembered in `localStorage`).
-- Cheats: the page's buttons call `web_cheat()` (`web_host.c`). It runs unlock and warp on the game thread at the next present (`gl_hle.c`), as the F1 overlay does natively. The `gl` renderer has no overlay. Shooter and skate mode are D3D9/XAudio2 only. On `gl` the build links `src/mods_stub.c` instead of `mods_mesh.c`, `skate.c` and `cod4_sound.c`, and both modes report themselves unavailable. `RECOMP_MODS` is defined only for the d3d9 renderer.
+- Cheats: the page's buttons call `web_cheat()` (`web_host.c`). It runs unlock and warp on the game thread at the next present (`gl_hle.c`), as the F1 overlay does natively. The web build has no overlay. Shooter and skate mode are Windows only (XAudio2): the web build links `src/mods_stub.c` instead of `mods_mesh.c`, `skate.c` and `cod4_sound.c`, and both modes report themselves unavailable. `RECOMP_MODS` is defined for every Windows build. ANGLE's include path is set only on the files that draw (`gl_hle.c`, `mods_mesh.c`, `overlay.cpp`, ImGui's GL back end), so changing it does not rebuild the lifted code.
 - `node tools/web_drive.mjs <url> <secs> <outdir> [Key@sec|PAUSE@sec ...]` drives Chrome headlessly enough for tests: console, screenshots, key presses, every thread's stack.
 
 ## Debug loop (P3+)
@@ -155,7 +158,8 @@ The same game in Chrome as WebAssembly: `docs/WEB_PORT_RESEARCH.md` (research, d
   - `--force-return ADDR=VALUE` to make a function return a constant.
 - **Compare against reference:**
   - Compare behaviour with xemu.
-  - RenderDoc and PIX don't capture D3D9. Run the exe with DXVK's `d3d9.dll` beside it (D3D9 on Vulkan) and capture that, or use `RECOMP_D3D_TRACE`.
+  - RenderDoc captures the build (`RECOMP_GFX=d3d11` or `vulkan`); it shows ANGLE's translated calls. `RECOMP_D3D_TRACE` logs the guest's own D3D8 calls.
+  - ANGLE's symbols: `..\angle\out\x64\libGLESv2.dll.pdb`; resolve sampler offsets (`[libGLESv2.dll+X]`) with `..\angle\third_party\llvm-build\Release+Asserts\bin\llvm-symbolizer.exe --obj=..\angle\out\x64\libGLESv2.dll --relative-address 0xX`.
   - Reference frames from the old D3D11 path are in `analysis/golden_d3d11/`. `tools/bmp2png.py` converts dumps for viewing.
   - Use REA to decompile and inspect the original function. Use Ghidra headless (`ghidra_naming`) for bulk naming.
 - **Upstream fixes:** keep toolkit fixes small, and send them upstream to xboxrecomp when they are generic. Commit toolkit changes apart from game changes: `git subtree split --prefix=xboxrecomp -b <branch>` then gives a branch to send upstream, and `git subtree pull --prefix=xboxrecomp https://github.com/sp00nznet/xboxrecomp main` takes in new upstream releases.

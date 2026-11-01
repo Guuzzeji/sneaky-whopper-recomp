@@ -33,7 +33,7 @@ extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
 extern void xbox_OhciInit(void);
 extern void xbox_path_init(const char *game_dir, const char *save_dir);
 extern int xbox_Nv2aMirrorFence(uint32_t device_ptr_va, uint32_t put_off, uint32_t get_ptr_off);
-extern void d3d9_hle_init(void);
+extern void gl_hle_init(void);
 extern void web_host_init(void);
 
 #define GAME_URL  "/game"            /* where the page's server has game/ */
@@ -161,7 +161,7 @@ int main(void)
     xbox_path_init("/game", "/save");
     xbox_kernel_bridge_init();
     xbox_Nv2aMirrorFence(0x0020D328, 0x2C, 0x30);
-    d3d9_hle_init();
+    gl_hle_init();
     web_host_init();
     g_esp = XBOX_STACK_TOP;
     if (!recomp_dispatch_init())

@@ -38,3 +38,6 @@ shooter.ini
 
 # Side build trees (web port and size experiments)
 build-*/
+
+# ANGLE build output (tools/build_angle.cmd)
+third_party/angle/

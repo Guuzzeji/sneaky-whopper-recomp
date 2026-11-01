@@ -547,7 +547,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* What a normal run needs, on unless set to 0, so the exe runs as is
      * from an IDE or Explorer. RECOMP_AC97_READY: without it DirectSound
      * init fails and the game shuts itself down. RECOMP_FB_WINDOW: the
-     * window D3D9 presents into. Set before the memory layout, which reads
+     * window the renderer presents into. Set before the memory layout, which reads
      * the first. */
     env_default_on("RECOMP_AC97_READY");
     env_default_on("RECOMP_FB_WINDOW");
@@ -665,7 +665,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     /* XDK D3D's fence waits (D3D_BlockOnTime, 0x1EECB0) spin until the GPU
      * semaphore at *(device+0x30) reaches the time D3D stamped at
-     * device+0x2C. The draws were done on D3D9 inside the calls that made
+     * device+0x2C. The draws were done on the host inside the calls that made
      * them, so the semaphore just follows the stamp (D3D's g_pDevice is
      * 0x0020D328). The lifted D3D still writes a pushbuffer; the toolkit's
      * NV2A model marks it consumed (DMA_GET) without executing it. */
@@ -675,10 +675,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         xbox_Nv2aMirrorFence(0x0020D328, 0x2C, 0x30);
     }
 
-    /* The game's D3D8 calls go to host Direct3D 9 (src/d3d9_hle.c). */
+    /* The game's D3D8 calls go to GL ES 3 on ANGLE (src/gl_hle.c). */
     {
-        extern void d3d9_hle_init(void);
-        d3d9_hle_init();
+        extern void gl_hle_init(void);
+        gl_hle_init();
     }
 
     /* Step 6: Initialize stack */

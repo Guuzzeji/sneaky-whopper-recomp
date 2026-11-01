@@ -58,27 +58,22 @@ add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 # is silently left out of the build and shows up as unresolved externals.
 file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 
-# The renderer: d3d9 (d3d9_hle.c, Direct3D 9, with the F1 overlay) or gl
-# (gl_hle.c, OpenGL ES 3 / WebGL2: the web port's, testable here on GL 4.3).
-set(RECOMP_RENDERER "d3d9" CACHE STRING "Renderer back end: d3d9 or gl")
-set_property(CACHE RECOMP_RENDERER PROPERTY STRINGS d3d9 gl)
-
 # Core game sources
+# The renderer is gl_hle.c, OpenGL ES 3: WebGL2 on the web, ANGLE on Windows,
+# which runs it on D3D11, Vulkan or desktop GL as RECOMP_GFX picks at run time.
 # Shooter mode (P9) needs cod4_anim.c on every target; its gun, effects and
-# sounds (mods_mesh.c, cod4_sound.c) and skate mode are D3D9/XAudio2 only, so
-# the gl renderer gets mods_stub.c instead and the two modes stay off there.
+# sounds (mods_mesh.c, cod4_sound.c) and skate mode are Windows only (XAudio2),
+# so the web build gets mods_stub.c instead and the two modes stay off there.
 if(EMSCRIPTEN)
-    set(RECOMP_RENDERER "gl" CACHE STRING "" FORCE)
     set(GAME_SOURCES src/main_web.c src/web_host.c)
 else()
     set(GAME_SOURCES src/main.c)
 endif()
-list(APPEND GAME_SOURCES src/recomp_manual.c src/cod4_anim.c)
-if(RECOMP_RENDERER STREQUAL "gl")
-    list(APPEND GAME_SOURCES src/gl_hle.c src/mods_stub.c)
+list(APPEND GAME_SOURCES src/recomp_manual.c src/cod4_anim.c src/gl_hle.c)
+if(EMSCRIPTEN)
+    list(APPEND GAME_SOURCES src/mods_stub.c)
 else()
     list(APPEND GAME_SOURCES
-        src/d3d9_hle.c
         src/mods_mesh.c
         src/skate.c
         src/cod4_sound.c
@@ -88,8 +83,8 @@ else()
         third_party/imgui/imgui_draw.cpp
         third_party/imgui/imgui_tables.cpp
         third_party/imgui/imgui_widgets.cpp
-        third_party/imgui/imgui_impl_dx9.cpp
         third_party/imgui/imgui_impl_win32.cpp
+        third_party/imgui/imgui_impl_opengl3.cpp
     )
 endif()
 
@@ -119,14 +114,13 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/recomp
     ${XBOXRECOMP_DIR}/include
-    # d3d9_hle.c: the toolkit's swizzle helpers.
+    # gl_hle.c: the toolkit's swizzle helpers.
     ${XBOXRECOMP_DIR}/src/d3d
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
 )
 
-# Shooter and skate mode draw and play through D3D9/XAudio2 (mods_mesh.c,
-# cod4_sound.c): only the d3d9 renderer offers them.
-if(NOT RECOMP_RENDERER STREQUAL "gl")
+# Shooter and skate mode play through XAudio2 (cod4_sound.c): Windows only.
+if(NOT EMSCRIPTEN)
     target_compile_definitions(${PROJECT_NAME} PRIVATE RECOMP_MODS)
 endif()
 
@@ -151,19 +145,35 @@ if(EMSCRIPTEN)
         --profiling-funcs
     )
 endif()
-if(RECOMP_RENDERER STREQUAL "gl" AND WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE opengl32)
+# On Windows the renderer runs on ANGLE (GL ES 3 on D3D11, Vulkan or desktop
+# GL, picked at run time with RECOMP_GFX), built by tools/build_angle.cmd into
+# third_party/angle. Its DLLs go beside the exe, its own Vulkan loader too:
+# ANGLE looks for vulkan-1.dll only there.
+if(WIN32)
+    set(ANGLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/angle" CACHE PATH "ANGLE build (tools/build_angle.cmd)")
+    if(NOT EXISTS "${ANGLE_DIR}/lib/libGLESv2.dll.lib")
+        message(FATAL_ERROR "ANGLE not found in ${ANGLE_DIR}: run tools\\build_angle.cmd")
+    endif()
+    # Only the files that draw: a target-wide flag would rebuild the lifted code.
+    set_source_files_properties(src/gl_hle.c src/mods_mesh.c src/overlay.cpp
+        third_party/imgui/imgui_impl_opengl3.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${ANGLE_DIR}/include"
+        COMPILE_DEFINITIONS "IMGUI_IMPL_OPENGL_ES3")
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        "${ANGLE_DIR}/lib/libEGL.dll.lib" "${ANGLE_DIR}/lib/libGLESv2.dll.lib")
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ANGLE_DIR}/bin/libEGL.dll" "${ANGLE_DIR}/bin/libGLESv2.dll" "${ANGLE_DIR}/bin/d3dcompiler_47.dll"
+            "${ANGLE_DIR}/bin/vulkan-1.dll"
+            $<TARGET_FILE_DIR:${PROJECT_NAME}>)
 endif()
 if(WIN32)
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    d3d9
     xinput
     winmm
     # Lets the fault handler resolve the host RIP back to the generated
     # function's symbol, i.e. to the guest function that faulted.
     dbghelp
-    # d3d9_hle.c compiles the title's vertex programs at run time.
-    d3dcompiler
     # overlay.cpp: the thread table and working set.
     psapi
     # cod4_sound.c: the shooter's gun sounds.
