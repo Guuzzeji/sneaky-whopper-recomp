@@ -1,9 +1,9 @@
 /*
- * d3d_hle_shared.h: the guest side of the D3D8 HLE, shared by the host back
- * ends (d3d9_hle.c on Direct3D 9, gl_hle.c on OpenGL ES 3 / WebGL2). Guest
+ * d3d_hle_shared.h: the guest side of the D3D8 HLE, for gl_hle.c. Guest
  * state addresses and enums, argument access, resource decoding, vertex
- * declaration reading and the NV2A vertex program translator. Included once,
- * by the one back end a build compiles.
+ * declaration reading and the NV2A vertex program translator. Also handed
+ * to tools.recomp as --exclude-manual: its sub_X_gen declarations tell the
+ * lifter which D3D bodies to emit under that name.
  */
 #ifndef D3D_HLE_SHARED_H
 #define D3D_HLE_SHARED_H
@@ -277,7 +277,7 @@ static void str_replace(char *buf, size_t cap, const char *from, const char *to)
     }
 }
 
-/* NV2A microcode to HLSL, instruction for instruction. The decoding and the
+/* NV2A microcode to GLSL ES 3.00, instruction for instruction. The decoding and the
  * semantics are the toolkit's CPU interpreter (src/kernel/nv2a_vsh_interp.c),
  * which the pushbuffer path drew every 3D scene with; this emits what it
  * executes. */
@@ -341,23 +341,12 @@ static void emit_mask(Sb *s, uint32_t m)
     sb(s, ".%s%s%s%s", (m & 8) ? "x" : "", (m & 4) ? "y" : "", (m & 2) ? "z" : "", (m & 1) ? "w" : "");
 }
 
-/* The instruction blocks of `n` instructions, in HLSL or (glsl) GLSL ES 3.00:
+/* The instruction blocks of `n` instructions, in GLSL ES 3.00:
  * each reads its A, B and C sources and writes R0-R12, a0 and the o*
  * outputs, which the caller declares. Sets *inputs to the registers read and
  * *uses_vp when the program applies D3D's viewport (c[58], c[59]). */
-static void vsh_body(const uint32_t *mc, int n, Sb *s, uint16_t *inputs, int *uses_vp, int glsl)
+static void vsh_body(const uint32_t *mc, int n, Sb *s, uint16_t *inputs, int *uses_vp)
 {
-    static const char *const mac_hlsl[14] = {
-        NULL, "A", "A * B", "A + C", "A * B + C", "dot(A.xyz, B.xyz).xxxx",
-        "(dot(A.xyz, B.xyz) + B.w).xxxx", "dot(A, B).xxxx",
-        "float4(1.0, A.y * B.y, A.z, B.w)", "min(A, B)", "max(A, B)",
-        "float4(A < B)", "float4(A >= B)", NULL,
-    };
-    static const char *const ilu_hlsl[8] = {
-        NULL, "C", "(1.0 / C.x).xxxx", "rcc(C.x).xxxx", "rsqrt(abs(C.x)).xxxx",
-        "float4(exp2(floor(C.x)), C.x - floor(C.x), exp2(C.x), 1.0)",
-        "nv_log(C.x)", "nv_lit(C)",
-    };
     static const char *const mac_glsl[14] = {
         NULL, "A", "A * B", "A + C", "A * B + C", "vec4(dot(A.xyz, B.xyz))",
         "vec4(dot(A.xyz, B.xyz) + B.w)", "vec4(dot(A, B))",
@@ -369,9 +358,9 @@ static void vsh_body(const uint32_t *mc, int n, Sb *s, uint16_t *inputs, int *us
         "vec4(exp2(floor(C.x)), C.x - floor(C.x), exp2(C.x), 1.0)",
         "nv_log(C.x)", "nv_lit(C)",
     };
-    const char *const *mac_expr = glsl ? mac_glsl : mac_hlsl;
-    const char *const *ilu_expr = glsl ? ilu_glsl : ilu_hlsl;
-    const char *v4 = glsl ? "vec4" : "float4", *zero = glsl ? "vec4(0.0)" : "0";
+    const char *const *mac_expr = mac_glsl;
+    const char *const *ilu_expr = ilu_glsl;
+    const char *v4 = "vec4", *zero = "vec4(0.0)";
     int i;
 
     *inputs = 0;
@@ -394,7 +383,7 @@ static void vsh_body(const uint32_t *mc, int n, Sb *s, uint16_t *inputs, int *us
            mac && mac < 13 && mac_expr[mac] ? mac_expr[mac] : zero, v4,
            ilu && ilu_expr[ilu] ? ilu_expr[ilu] : zero);
         if (mac == 13)
-            sb(s, glsl ? "    a0 = int(floor(A.x + 0.001));\n" : "    a0 = (int)floor(A.x + 0.001);\n");
+            sb(s, "    a0 = int(floor(A.x + 0.001));\n");
         if (mac && mac != 13 && mac_mask && tdst <= 12) {
             sb(s, "    R%u", tdst); emit_mask(s, mac_mask);
             sb(s, " = M"); emit_mask(s, mac_mask); sb(s, ";\n");

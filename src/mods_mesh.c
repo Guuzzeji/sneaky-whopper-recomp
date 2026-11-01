@@ -4,11 +4,11 @@
  * (tools/cod4_extract.py, from the user's own install, with a <material>.dds
  * per surface). recomp_manual.c works out where it is (the King's right
  * wrist and CoD4's grip) and submits the scene with the game's camera when
- * it leaves 3D for its HUD; d3d9_hle.c's present() then has it drawn into
+ * it leaves 3D for its HUD; the renderer's present() then has it drawn into
  * the presented buffer against the scene's depth, before the stretch to the
- * window. Every state set here is put back with a state block. */
+ * window, through GL ES 3 (gl_hle.c sets all of its own state at each draw,
+ * so nothing needs putting back). */
 #include <windows.h>
-#include <d3d9.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,32 +16,37 @@
 
 #include "overlay.h"
 
-IDirect3DTexture9 *d3d9_dds_load(const char *path);
+#include <GLES3/gl3.h>
+typedef GLuint MTex;
+GLuint gl_dds_load(const char *path);
+#define tex_load gl_dds_load
+#define D3DCOLOR_ARGB(a, r, g, b) \
+    ((DWORD)((((a) & 0xFF) << 24) | (((r) & 0xFF) << 16) | (((g) & 0xFF) << 8) | ((b) & 0xFF)))
+#define D3DCOLOR_XRGB(r, g, b) D3DCOLOR_ARGB(0xFF, r, g, b)
 
-#define GUN_FVF (D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX1)
-#define FX_FVF  (D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1)
 typedef struct { float p[3], n[3], uv[2]; } GunVert;
 typedef struct { float p[3]; DWORD c; float uv[2]; } FxVert;
-typedef struct { UINT first, tris; IDirect3DTexture9 *tex; } GunPart;
+typedef struct { UINT first, tris; MTex tex; } GunPart;
 
 static struct {
     char name[64];
-    IDirect3DVertexBuffer9 *vb;
+    GLuint vb;
     GunPart part[64];
     int nparts, failed;
 } s_gun;
 
-static IDirect3DStateBlock9 *s_saved;
-static IDirect3DTexture9 *s_fx_flash, *s_fx_side, *s_fx_tracer, *s_fx_dust, *s_fx_spark;
+static MTex s_fx_flash, s_fx_side, s_fx_tracer, s_fx_dust, s_fx_spark;
 
 static void gun_free(void)
 {
     int i;
     for (i = 0; i < s_gun.nparts; i++)
-        if (s_gun.part[i].tex)
-            IDirect3DTexture9_Release(s_gun.part[i].tex);
-    if (s_gun.vb)
-        IDirect3DVertexBuffer9_Release(s_gun.vb);
+        if (s_gun.part[i].tex) {
+            glDeleteTextures(1, &s_gun.part[i].tex);
+        }
+    if (s_gun.vb) {
+        glDeleteBuffers(1, &s_gun.vb);
+    }
     memset(&s_gun, 0, sizeof s_gun);
 }
 
@@ -55,13 +60,12 @@ static void *grow(void *arr, size_t *cap, size_t n, size_t sz)
 }
 
 /* OBJ with v/vt/vn and triangular f a/b/c, a part per usemtl. */
-static void gun_load(IDirect3DDevice9 *dev, const char *name)
+static void gun_load(void *dev, const char *name)
 {
     char path[MAX_PATH], line[512], mtl[128] = "";
     float (*pos)[3] = NULL, (*uv)[2] = NULL, (*nrm)[3] = NULL;
     GunVert *out = NULL;
     size_t np = 0, nt = 0, nn = 0, no = 0, cp = 0, ct = 0, cn = 0, co = 0;
-    void *dst;
     FILE *f;
 
     gun_free();
@@ -91,7 +95,7 @@ static void gun_load(IDirect3DDevice9 *dev, const char *name)
             sscanf(line + 7, "%127s", mtl);
             snprintf(path, sizeof path, SHOOTER_GUN_DIR "/%s/%s.dds", name, mtl);
             p->first = (UINT)no;
-            p->tex = d3d9_dds_load(path);
+            p->tex = tex_load(path);
         } else if (line[0] == 'f' && line[1] == ' ' && s_gun.nparts) {
             char *s = line + 2;
             int k;
@@ -110,11 +114,11 @@ static void gun_load(IDirect3DDevice9 *dev, const char *name)
         }
     }
     fclose(f);
-    if (no && SUCCEEDED(IDirect3DDevice9_CreateVertexBuffer(dev, (UINT)(no * sizeof *out), 0,
-                                                             GUN_FVF, D3DPOOL_MANAGED, &s_gun.vb, NULL))
-        && SUCCEEDED(IDirect3DVertexBuffer9_Lock(s_gun.vb, 0, 0, &dst, 0))) {
-        memcpy(dst, out, no * sizeof *out);
-        IDirect3DVertexBuffer9_Unlock(s_gun.vb);
+    (void)dev;
+    if (no) {
+        glGenBuffers(1, &s_gun.vb);
+        glBindBuffer(GL_ARRAY_BUFFER, s_gun.vb);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(no * sizeof *out), out, GL_STATIC_DRAW);
         fprintf(stderr, "[GUN] %s: %u triangles, %d parts\n", name, (unsigned)(no / 3), s_gun.nparts);
     } else {
         s_gun.failed = 1;
@@ -128,11 +132,11 @@ static void fx_load(void)
     if (done)
         return;
     done = 1;
-    s_fx_flash = d3d9_dds_load(SHOOTER_FX_DIR "/muzflash.dds");
-    s_fx_side = d3d9_dds_load(SHOOTER_FX_DIR "/muzflash_side.dds");
-    s_fx_tracer = d3d9_dds_load(SHOOTER_FX_DIR "/tracer.dds");
-    s_fx_dust = d3d9_dds_load(SHOOTER_FX_DIR "/impact_dust.dds");
-    s_fx_spark = d3d9_dds_load(SHOOTER_FX_DIR "/impact_spark.dds");
+    s_fx_flash = tex_load(SHOOTER_FX_DIR "/muzflash.dds");
+    s_fx_side = tex_load(SHOOTER_FX_DIR "/muzflash_side.dds");
+    s_fx_tracer = tex_load(SHOOTER_FX_DIR "/tracer.dds");
+    s_fx_dust = tex_load(SHOOTER_FX_DIR "/impact_dust.dds");
+    s_fx_spark = tex_load(SHOOTER_FX_DIR "/impact_spark.dds");
 }
 
 static void v3sub(const float a[3], const float b[3], float o[3]) { o[0] = a[0] - b[0]; o[1] = a[1] - b[1]; o[2] = a[2] - b[2]; }
@@ -161,9 +165,13 @@ static void quad(FxVert q[4], const float c[3], const float u[3], const float v[
     }
 }
 
-static void draw_fx(IDirect3DDevice9 *dev, const ShooterScene *sc)
+/* per back end, at the end of the file */
+static void fx_begin(void *dev);
+static void fx_quad(void *dev, MTex t, const FxVert q[4]);
+static void fx_dust(void *dev);
+
+static void draw_fx(void *dev, const ShooterScene *sc)
 {
-    static const float ident[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
     float eye[3], right[3], up[3];
     FxVert q[4];
     int i;
@@ -176,22 +184,10 @@ static void draw_fx(IDirect3DDevice9 *dev, const ShooterScene *sc)
         eye[i] = -(sc->view[12] * sc->view[i * 4 + 0] + sc->view[13] * sc->view[i * 4 + 1]
                    + sc->view[14] * sc->view[i * 4 + 2]);
     }
-    IDirect3DDevice9_SetTransform(dev, D3DTS_WORLD, (const D3DMATRIX *)ident);
-    IDirect3DDevice9_SetFVF(dev, FX_FVF);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_LIGHTING, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZWRITEENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_SRCBLEND, D3DBLEND_ONE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_DESTBLEND, D3DBLEND_ONE);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-    IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    fx_begin(dev);
 
     /* tracers: a thin strip from the muzzle toward the hit, turned to face us */
     if (s_fx_tracer) {
-        IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)s_fx_tracer);
         for (i = 0; i < SHOOTER_TRACERS; i++) {
             float d[3], to_eye[3], side[3], len, c[3], u[3], head = 0.0f;
             int a = (int)(sc->tracer[i].life / 0.06f * 255.0f), k;
@@ -214,7 +210,7 @@ static void draw_fx(IDirect3DDevice9 *dev, const ShooterScene *sc)
             }
             a = a < 0 ? 0 : a > 255 ? 255 : a;
             quad(q, c, side, u, D3DCOLOR_ARGB(255, a, a * 9 / 10, a * 6 / 10));
-            IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, q, sizeof q[0]);
+            fx_quad(dev, s_fx_tracer, q);
         }
     }
     /* muzzle flash: a star facing us and a flare along the barrel */
@@ -229,9 +225,8 @@ static void draw_fx(IDirect3DDevice9 *dev, const ShooterScene *sc)
                 u[k] = (right[k] * cs + up[k] * sn) * s;
                 v[k] = (-right[k] * sn + up[k] * cs) * s;
             }
-            IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)s_fx_flash);
             quad(q, sc->muzzle, u, v, D3DCOLOR_ARGB(255, 255, 230, 180));
-            IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, q, sizeof q[0]);
+            fx_quad(dev, s_fx_flash, q);
         }
         if (s_fx_side) {
             for (k = 0; k < 3; k++)
@@ -243,9 +238,8 @@ static void draw_fx(IDirect3DDevice9 *dev, const ShooterScene *sc)
                 side[k] *= s * 0.6f;
                 u[k] = bar[k] * s * 1.3f;
             }
-            IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)s_fx_side);
             quad(q, c, side, u, D3DCOLOR_ARGB(255, 255, 220, 160));
-            IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, q, sizeof q[0]);
+            fx_quad(dev, s_fx_side, q);
         }
     }
     /* impacts: a spark for a moment, then a puff of dust that grows and fades */
@@ -257,17 +251,11 @@ static void draw_fx(IDirect3DDevice9 *dev, const ShooterScene *sc)
         sz = 7.0f + age * 120.0f;
         for (k = 0; k < 3; k++) { u[k] = right[k] * sz; v[k] = up[k] * sz; }
         a = (int)(255.0f * (1.0f - age / 0.07f));
-        IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)s_fx_spark);
         quad(q, sc->impact[i].p, u, v, D3DCOLOR_ARGB(255, a, a * 8 / 10, a / 2));
-        IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, q, sizeof q[0]);
+        fx_quad(dev, s_fx_spark, q);
     }
     if (s_fx_dust) {
-        IDirect3DDevice9_SetRenderState(dev, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-        IDirect3DDevice9_SetRenderState(dev, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-        IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-        IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)s_fx_dust);
+        fx_dust(dev);
         for (i = 0; i < SHOOTER_IMPACTS; i++) {
             float t = 1.0f - sc->impact[i].life / SHOOTER_IMPACT_LIFE, u[3], v[3], sz, ang = (float)i * 2.1f;
             float cs = cosf(ang), sn = sinf(ang);
@@ -281,7 +269,7 @@ static void draw_fx(IDirect3DDevice9 *dev, const ShooterScene *sc)
             }
             a = (int)(230.0f * (1.0f - t));
             quad(q, sc->impact[i].p, u, v, D3DCOLOR_ARGB(a, 200, 185, 160));
-            IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, q, sizeof q[0]);
+            fx_quad(dev, s_fx_dust, q);
         }
     }
 }
@@ -302,7 +290,6 @@ void gun_world_submit(const ShooterScene *sc)
 /* Built from boxes in board space (inches, X along the board, Y up, Z across,
  * the ground at Y 0): a 32" deck with kicked nose and tail, two trucks, four
  * wheels. Vertex colours, lit like the gun. */
-#define BOARD_FVF (D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE)
 #define BOARD_FILE "game/mods/skate3/board.bin"
 typedef struct { float p[3], n[3]; DWORD c; } BoardVert;
 
@@ -395,175 +382,274 @@ void board_world_submit(const float view[16], const float proj[16], const float 
     s_bd.pending = 1;
 }
 
-static void board_draw(IDirect3DDevice9 *dev)
+
+/* -- Drawing --------------------------------------------------------------------
+ * D3D9-style fixed function as one small program: a directional light and the
+ * ambient over a material that is white or the vertex colour, times the
+ * texture. Matrices are D3D's (row vectors), loaded as they are: GLSL reads
+ * them transposed, so M * v is D3D's v * M. gl_hle.c's present() binds the
+ * targets and viewport; clip y is negated and z remapped as gl_hle.c does. */
+
+static const char *const s_mm_vs =
+    "#version 300 es\n"
+    "uniform mat4 u_wvp, u_world;\n"
+    "uniform vec3 u_ambient, u_light;\n"
+    "uniform int u_lit, u_colvert;\n"
+    "in vec3 a_pos; in vec3 a_nrm; in vec4 a_col; in vec2 a_uv;\n"
+    "out vec4 v_col; out vec2 v_uv;\n"
+    "void main() {\n"
+    "  vec4 p = u_wvp * vec4(a_pos, 1.0);\n"
+    "  gl_Position = vec4(p.x, -p.y, 2.0 * p.z - p.w, p.w);\n"
+    "  vec4 c = u_colvert != 0 ? a_col.bgra : vec4(1.0);\n"   /* D3DCOLOR is BGRA in memory */
+    "  if (u_lit != 0) {\n"
+    "    vec3 n = normalize(mat3(u_world) * a_nrm);\n"
+    "    c.rgb = clamp(c.rgb * (u_ambient + u_light * max(dot(n, -normalize(vec3(0.3, -0.9, 0.3))), 0.0)), 0.0, 1.0);\n"
+    "  }\n"
+    "  v_col = c; v_uv = a_uv;\n"
+    "}\n";
+static const char *const s_mm_fs =
+    "#version 300 es\n"
+    "precision mediump float;\n"
+    "uniform sampler2D u_tex;\n"
+    "uniform int u_use_tex, u_tex_alpha;\n"
+    "in vec4 v_col; in vec2 v_uv;\n"
+    "out vec4 o_color;\n"
+    "void main() {\n"
+    "  vec4 c = v_col;\n"
+    "  if (u_use_tex != 0) {\n"
+    "    vec4 t = texture(u_tex, v_uv);\n"
+    "    c.rgb *= t.rgb;\n"
+    "    if (u_tex_alpha != 0) c.a *= t.a;\n"
+    "  }\n"
+    "  o_color = c;\n"
+    "}\n";
+
+static GLuint s_mm_prog, s_mm_vao, s_mm_vbo, s_mm_wrap, s_mm_clamp;
+static GLint s_u_wvp, s_u_world, s_u_ambient, s_u_light, s_u_lit, s_u_colvert, s_u_use_tex, s_u_tex_alpha;
+static float s_mm_vp[16];                  /* view * proj of the pass being drawn */
+
+static GLuint mm_shader(GLenum type, const char *src)
 {
-    D3DLIGHT9 light;
-    D3DMATERIAL9 mat;
-    int i;
-    board_build();
-    if (!s_saved && FAILED(IDirect3DDevice9_CreateStateBlock(dev, D3DSBT_ALL, &s_saved)))
-        return;
-    IDirect3DStateBlock9_Capture(s_saved);
-    IDirect3DDevice9_SetTransform(dev, D3DTS_VIEW, (const D3DMATRIX *)s_bd.view);
-    IDirect3DDevice9_SetTransform(dev, D3DTS_PROJECTION, (const D3DMATRIX *)s_bd.proj);
-    IDirect3DDevice9_SetTransform(dev, D3DTS_WORLD, (const D3DMATRIX *)s_bd.world);
-    IDirect3DDevice9_SetVertexShader(dev, NULL);
-    IDirect3DDevice9_SetPixelShader(dev, NULL);
-    IDirect3DDevice9_SetFVF(dev, BOARD_FVF);
-    IDirect3DDevice9_SetTexture(dev, 0, NULL);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, D3DZB_TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZWRITEENABLE, TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_STENCILENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_FOGENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_SCISSORTESTENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_CLIPPLANEENABLE, 0);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_COLORWRITEENABLE, 0xF);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_FILLMODE, D3DFILL_SOLID);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_SPECULARENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_NORMALIZENORMALS, TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_LIGHTING, TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_COLORVERTEX, TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_DIFFUSEMATERIALSOURCE, D3DMCS_COLOR1);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_AMBIENTMATERIALSOURCE, D3DMCS_COLOR1);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_AMBIENT, D3DCOLOR_XRGB(120, 120, 125));
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_DEPTHBIAS, 0);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_SLOPESCALEDEPTHBIAS, 0);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-    memset(&light, 0, sizeof light);
-    light.Type = D3DLIGHT_DIRECTIONAL;
-    light.Diffuse.r = light.Diffuse.g = light.Diffuse.b = 0.7f;
-    light.Direction.x = 0.3f; light.Direction.y = -0.9f; light.Direction.z = 0.3f;
-    IDirect3DDevice9_SetLight(dev, 0, &light);
-    IDirect3DDevice9_LightEnable(dev, 0, TRUE);
-    for (i = 1; i < 8; i++)
-        IDirect3DDevice9_LightEnable(dev, i, FALSE);
-    memset(&mat, 0, sizeof mat);
-    mat.Diffuse.r = mat.Diffuse.g = mat.Diffuse.b = mat.Diffuse.a = 1.0f;
-    mat.Ambient = mat.Diffuse;
-    IDirect3DDevice9_SetMaterial(dev, &mat);
-    IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, s_board_n / 3, s_board, sizeof s_board[0]);
-    if (getenv("RECOMP_SKATE_DEBUG")) {
-        static DWORD last;
-        if (GetTickCount() - last > 1000) {
-            last = GetTickCount();
-            fprintf(stderr, "[BOARD] %d verts at %.0f %.0f %.0f x-axis %.2f %.2f %.2f view row3 %.0f %.0f %.0f\n", s_board_n,
-                    s_bd.world[12], s_bd.world[13], s_bd.world[14], s_bd.world[0], s_bd.world[1], s_bd.world[2],
-                    s_bd.view[12], s_bd.view[13], s_bd.view[14]);
-        }
+    GLuint sh = glCreateShader(type);
+    GLint ok = 0;
+    glShaderSource(sh, 1, &src, NULL);
+    glCompileShader(sh);
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetShaderInfoLog(sh, sizeof log, NULL, log);
+        fprintf(stderr, "[MODS] shader: %s\n", log);
     }
-    IDirect3DStateBlock9_Apply(s_saved);
+    return sh;
 }
 
-/* d3d9_hle.c's present(), before the frame is stretched to the window: the
- * guest's colour and depth targets still hold the finished 3D scene. */
-void gun_world_flush(void *dev_)
+static int mm_init(void)
 {
-    IDirect3DDevice9 *dev = (IDirect3DDevice9 *)dev_;
-    if (!s_have_pending && !s_bd.pending)
-        return;
-    if (SUCCEEDED(IDirect3DDevice9_BeginScene(dev))) {
+    static const char *const attr[] = { "a_pos", "a_nrm", "a_col", "a_uv" };
+    static int failed;
+    GLint ok = 0;
+    GLuint i;
+    if (s_mm_prog || failed)
+        return s_mm_prog != 0;
+    s_mm_prog = glCreateProgram();
+    glAttachShader(s_mm_prog, mm_shader(GL_VERTEX_SHADER, s_mm_vs));
+    glAttachShader(s_mm_prog, mm_shader(GL_FRAGMENT_SHADER, s_mm_fs));
+    for (i = 0; i < 4; i++)
+        glBindAttribLocation(s_mm_prog, i, attr[i]);
+    glLinkProgram(s_mm_prog);
+    glGetProgramiv(s_mm_prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        fprintf(stderr, "[MODS] the mods' GL program does not link\n");
+        glDeleteProgram(s_mm_prog);
+        s_mm_prog = 0;
+        failed = 1;
+        return 0;
+    }
+    s_u_wvp = glGetUniformLocation(s_mm_prog, "u_wvp");
+    s_u_world = glGetUniformLocation(s_mm_prog, "u_world");
+    s_u_ambient = glGetUniformLocation(s_mm_prog, "u_ambient");
+    s_u_light = glGetUniformLocation(s_mm_prog, "u_light");
+    s_u_lit = glGetUniformLocation(s_mm_prog, "u_lit");
+    s_u_colvert = glGetUniformLocation(s_mm_prog, "u_colvert");
+    s_u_use_tex = glGetUniformLocation(s_mm_prog, "u_use_tex");
+    s_u_tex_alpha = glGetUniformLocation(s_mm_prog, "u_tex_alpha");
+    glGenVertexArrays(1, &s_mm_vao);
+    glGenBuffers(1, &s_mm_vbo);
+    glGenSamplers(1, &s_mm_wrap);
+    glGenSamplers(1, &s_mm_clamp);
+    glSamplerParameteri(s_mm_wrap, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glSamplerParameteri(s_mm_wrap, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glSamplerParameteri(s_mm_clamp, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glSamplerParameteri(s_mm_clamp, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glSamplerParameteri(s_mm_clamp, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(s_mm_clamp, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glUseProgram(s_mm_prog);
+    glUniform1i(glGetUniformLocation(s_mm_prog, "u_tex"), 0);
+    return 1;
+}
+
+/* o = a * b, D3D row-major */
+static void mat_mul(const float a[16], const float b[16], float o[16])
+{
+    int r, c, k;
+    for (r = 0; r < 4; r++)
+        for (c = 0; c < 4; c++) {
+            float v = 0.0f;
+            for (k = 0; k < 4; k++)
+                v += a[r * 4 + k] * b[k * 4 + c];
+            o[r * 4 + c] = v;
+        }
+}
+
+/* The program and depth state for a pass: opaque, depth tested and written. */
+static void mm_begin(const float view[16], const float proj[16])
+{
+    mat_mul(view, proj, s_mm_vp);
+    glUseProgram(s_mm_prog);
+    glBindVertexArray(s_mm_vao);
+    glActiveTexture(GL_TEXTURE0);
+    glDisable(GL_BLEND);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_TRUE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glUniform1i(s_u_tex_alpha, 0);
+}
+
+static void mm_world(const float world[16])
+{
+    float wvp[16];
+    mat_mul(world, s_mm_vp, wvp);
+    glUniformMatrix4fv(s_u_wvp, 1, GL_FALSE, wvp);
+    glUniformMatrix4fv(s_u_world, 1, GL_FALSE, world);
+}
+
+static void mm_light(int lit, int colvert, DWORD ambient, float diffuse)
+{
+    float a[3] = { ((ambient >> 16) & 0xFF) / 255.0f, ((ambient >> 8) & 0xFF) / 255.0f, (ambient & 0xFF) / 255.0f };
+    glUniform1i(s_u_lit, lit);
+    glUniform1i(s_u_colvert, colvert);
+    glUniform3fv(s_u_ambient, 1, a);
+    glUniform3f(s_u_light, diffuse, diffuse, diffuse);
+}
+
+static void mm_tex(MTex t, GLuint sampler)
+{
+    glUniform1i(s_u_use_tex, t != 0);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glBindSampler(0, sampler);
+}
+
+/* Attribute layout of the bound array buffer, for a vertex with (offsets,
+ * or -1 for none) position, normal, colour and texture coordinate. */
+static void mm_attribs(GLsizei stride, int nrm, int col, int uv)
+{
+    const int off[4] = { 0, nrm, col, uv };
+    GLuint i;
+    for (i = 0; i < 4; i++) {
+        if (off[i] < 0) {
+            glDisableVertexAttribArray(i);
+            continue;
+        }
+        glEnableVertexAttribArray(i);
+        if (i == 2)
+            glVertexAttribPointer(i, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (const void *)(uintptr_t)off[i]);
+        else
+            glVertexAttribPointer(i, i == 3 ? 2 : 3, GL_FLOAT, GL_FALSE, stride, (const void *)(uintptr_t)off[i]);
+    }
+    glVertexAttrib4f(1, 0, 0, 0, 0);
+    glVertexAttrib4f(2, 1, 1, 1, 1);
+}
+
+static void mm_stream(const void *v, size_t bytes)
+{
+    glBindBuffer(GL_ARRAY_BUFFER, s_mm_vbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, v, GL_STREAM_DRAW);
+}
+
+static void fx_begin(void *dev)
+{
+    static const float ident[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    (void)dev;
+    mm_world(ident);
+    mm_light(0, 1, 0, 0.0f);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFunc(GL_ONE, GL_ONE);
+}
+
+static void fx_quad(void *dev, MTex t, const FxVert q[4])
+{
+    (void)dev;
+    mm_tex(t, s_mm_clamp);
+    mm_stream(q, 4 * sizeof *q);
+    mm_attribs(sizeof *q, -1, 12, 16);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+/* the dust: alpha blended, with the texture's alpha */
+static void fx_dust(void *dev)
+{
+    (void)dev;
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUniform1i(s_u_tex_alpha, 1);
+}
+
+static void board_draw(void)
+{
+    board_build();
+    mm_begin(s_bd.view, s_bd.proj);
+    mm_world(s_bd.world);
+    mm_light(1, 1, D3DCOLOR_XRGB(120, 120, 125), 0.7f);
+    mm_tex(0, s_mm_wrap);
+    mm_stream(s_board, (size_t)s_board_n * sizeof *s_board);
+    mm_attribs(sizeof *s_board, 12, 24, -1);
+    glDrawArrays(GL_TRIANGLES, 0, s_board_n);
+}
+
+/* gl_hle.c's present(), before the frame is blitted to the window, with the
+ * presented guest buffer and the scene's depth bound. */
+void gun_world_flush(void *dev)
+{
+    if ((s_have_pending || s_bd.pending) && mm_init()) {
         if (s_have_pending)
             gun_world_draw(dev, &s_pending);
         if (s_bd.pending)
-            board_draw(dev);
-        IDirect3DDevice9_EndScene(dev);
+            board_draw();
+        glBindSampler(0, 0);
     }
     s_have_pending = 0;
     s_bd.pending = 0;
 }
 
-/* Into the targets present() bound: the presented guest buffer and its depth. */
-void gun_world_draw(void *dev_, const ShooterScene *sc)
+void gun_world_draw(void *dev, const ShooterScene *sc)
 {
-    IDirect3DDevice9 *dev = (IDirect3DDevice9 *)dev_;
-    D3DLIGHT9 light;
-    D3DMATERIAL9 mat;
     int i;
-
     if (sc->draw_gun && strcmp(sc->gun, s_gun.name) != 0)
         gun_load(dev, sc->gun);
     fx_load();
-    if (!s_saved && FAILED(IDirect3DDevice9_CreateStateBlock(dev, D3DSBT_ALL, &s_saved)))
+    if (!mm_init())
         return;
-    IDirect3DStateBlock9_Capture(s_saved);
-
-    IDirect3DDevice9_SetTransform(dev, D3DTS_VIEW, (const D3DMATRIX *)sc->view);
-    IDirect3DDevice9_SetTransform(dev, D3DTS_PROJECTION, (const D3DMATRIX *)sc->proj);
-    IDirect3DDevice9_SetVertexShader(dev, NULL);
-    IDirect3DDevice9_SetPixelShader(dev, NULL);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, D3DZB_TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZWRITEENABLE, TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_STENCILENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_FOGENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_SCISSORTESTENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_CLIPPLANEENABLE, 0);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_COLORWRITEENABLE, 0xF);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_FILLMODE, D3DFILL_SOLID);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_SPECULARENABLE, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_NORMALIZENORMALS, TRUE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_COLORVERTEX, FALSE);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_DIFFUSEMATERIALSOURCE, D3DMCS_MATERIAL);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_AMBIENTMATERIALSOURCE, D3DMCS_MATERIAL);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_DEPTHBIAS, 0);
-    IDirect3DDevice9_SetRenderState(dev, D3DRS_SLOPESCALEDEPTHBIAS, 0);
-    IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-    IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-    IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_TEXCOORDINDEX, 0);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-
+    mm_begin(sc->view, sc->proj);
     if (sc->draw_gun && s_gun.vb && !s_gun.failed) {
-        IDirect3DDevice9_SetTransform(dev, D3DTS_WORLD, (const D3DMATRIX *)sc->gun_world);
-        IDirect3DDevice9_SetFVF(dev, GUN_FVF);
-        IDirect3DDevice9_SetRenderState(dev, D3DRS_LIGHTING, TRUE);
+        mm_world(sc->gun_world);
         /* lit from above, with the muzzle flash warming it for a moment */
-        IDirect3DDevice9_SetRenderState(dev, D3DRS_AMBIENT, sc->flash > 0.0f
-                                        ? D3DCOLOR_XRGB(200, 170, 120) : D3DCOLOR_XRGB(110, 110, 115));
-        memset(&light, 0, sizeof light);
-        light.Type = D3DLIGHT_DIRECTIONAL;
-        light.Diffuse.r = light.Diffuse.g = light.Diffuse.b = 0.75f;
-        light.Direction.x = 0.3f; light.Direction.y = -0.9f; light.Direction.z = 0.3f;
-        IDirect3DDevice9_SetLight(dev, 0, &light);
-        IDirect3DDevice9_LightEnable(dev, 0, TRUE);
-        for (i = 1; i < 8; i++)
-            IDirect3DDevice9_LightEnable(dev, i, FALSE);
-        memset(&mat, 0, sizeof mat);
-        mat.Diffuse.r = mat.Diffuse.g = mat.Diffuse.b = mat.Diffuse.a = 1.0f;
-        mat.Ambient = mat.Diffuse;
-        IDirect3DDevice9_SetMaterial(dev, &mat);
-        IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-        IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-        IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-        IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-        IDirect3DDevice9_SetStreamSource(dev, 0, s_gun.vb, 0, sizeof(GunVert));
+        mm_light(1, 0, sc->flash > 0.0f ? D3DCOLOR_XRGB(200, 170, 120) : D3DCOLOR_XRGB(110, 110, 115), 0.75f);
+        glBindBuffer(GL_ARRAY_BUFFER, s_gun.vb);
+        mm_attribs(sizeof(GunVert), 12, -1, 24);
         for (i = 0; i < s_gun.nparts; i++) {
             const GunPart *pt = &s_gun.part[i];
             if (!pt->tris)
                 continue;
-            IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)pt->tex);
-            IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP,
-                                                  pt->tex ? D3DTOP_MODULATE : D3DTOP_SELECTARG2);
-            IDirect3DDevice9_DrawPrimitive(dev, D3DPT_TRIANGLELIST, pt->first, pt->tris);
+            mm_tex(pt->tex, s_mm_wrap);
+            glDrawArrays(GL_TRIANGLES, (GLint)pt->first, (GLsizei)(pt->tris * 3));
         }
     }
     draw_fx(dev, sc);
-    IDirect3DDevice9_SetTexture(dev, 0, NULL);
-    IDirect3DStateBlock9_Apply(s_saved);
 }
+

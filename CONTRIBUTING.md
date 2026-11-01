@@ -21,7 +21,7 @@ Never commit or attach anything that comes from a game disc. That includes:
 | Problem | Where |
 |---|---|
 | One game function behaves wrongly | An override in `src/recomp_manual.c` |
-| Graphics | `src/d3d9_hle.c` (Windows) or `src/gl_hle.c` (web) |
+| Graphics | `src/gl_hle.c` (GL ES 3: ANGLE on Windows, WebGL2 on the web) |
 | Function boundaries, missed indirect-call targets | The seed lists in `seeds/` or the `tools.recomp` options (`CLAUDE.md`, "Debug loop") |
 | A bug in the lifter or the Xbox runtime | `xboxrecomp/` |
 

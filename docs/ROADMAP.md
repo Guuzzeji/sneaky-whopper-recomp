@@ -242,6 +242,41 @@ Cheats that borrow other games' mechanics. Nothing from those games is in the re
   - **Toolkit:** `mkb_set_mute`.
 - [ ] Skate polish: Skate 3's real tuning numbers, sounds and board model; grinds and manuals.
 
+## P10 — Switchable renderer: Direct3D 11, Vulkan, OpenGL (ANGLE)
+
+The user wanted the renderer switchable between DirectX, Vulkan and OpenGL through one open-source library, at 30 fps with no graphics regressions. Candidates and their pros and cons:
+
+| Option | Back ends | For | Against |
+|---|---|---|---|
+| **ANGLE** (chosen) | D3D11, Vulkan, desktop GL | `gl_hle.c` runs on it unchanged; run-time GLSL is its native model; the back end is one EGL attribute; the same stack as WebGL, so native and web share a renderer | DLLs built with gn (`tools/build_angle.cmd`); no D3D12 |
+| sokol_gfx | D3D11, GL, Metal; Vulkan experimental (Dec 2025) | small, plain C | a full rewrite; Vulkan wants SPIR-V (embed glslang) |
+| Diligent Engine | D3D11/12, Vulkan, GL, Metal, WebGPU | widest; run-time HLSL everywhere | big C++ dependency; a rewrite; fixed function ported to HLSL again |
+| bgfx | D3D11/12, Vulkan, GL, Metal | mature | shaders compiled offline, against our run-time NV2A translation; a rewrite |
+| SDL3 GPU | Vulkan, D3D12, Metal | modern API | no OpenGL; run-time shaders need shadercross |
+| DXVK | Vulkan only | no code | no OpenGL, no switching |
+
+Our shaders are made at run time (one per title vertex program and per fixed-function state, up to 1,024), which rules out offline shader compilers, and `gl_hle.c` already turned D3D8's fixed function into GLSL. The earlier D3D11 back end (P5–P7) was not D3D11's fault: it sat behind the NV2A pushbuffer executor, which the missing King and the stretching NPCs were traced to (P6).
+
+- [x] `tools/build_angle.cmd`: ANGLE from source with D3D11, Vulkan and GL (mmozeiko/build-angle's recipe; its prebuilt zips are D3D11 only). Chromium's toolchain pins the Windows SDK (10.0.28000) and an `NTDDI_VERSION` to match; the script points both at the newest SDK installed. Output in `third_party/angle/` (gitignored).
+- [x] `gl_hle.c` on EGL: `RECOMP_GFX=d3d11|vulkan|gl` picks `EGL_PLATFORM_ANGLE_TYPE_*`; an ES 3.0 context with `EGL_CONTEXT_OPENGL_NO_ERROR_KHR`; linked straight to `libGLESv2` (the WGL bootstrap and its 150-line function loader are gone). ANGLE loads `vulkan-1.dll` only from its own folder, so the build copies ANGLE's loader beside the exe.
+- [x] Vertex uploads stay one `glBufferData` per draw. A ring mapped with `GL_MAP_UNSYNCHRONIZED_BIT` held the first level at 11–19 fps on D3D11: `Buffer11::mapRange` re-syncs ANGLE's whole staging copy (8 MB) on every map (`memmove` in the sampler, `RECOMP_SAMPLE_SECS`). `glBufferSubData` into a ring and per-draw orphaning both lock to 30; orphaning is the shorter code and the web path's.
+- [x] The F1 overlay on ImGui's OpenGL 3 back end (ES 3); the Renderer tab names the ANGLE back end in use.
+- [x] Shooter and skate mode on GL: `mods_mesh.c` draws the gun, muzzle flash, tracers, impacts and board with one small GLSL program (one directional light and the ambient, texture modulate, additive and alpha blending). `gl_dds_load` is split out of `hd_load`.
+- [x] One-time warnings where `gl_hle.c` falls short of D3D9 (bump env ops, FVF blend weights). Neither fires in the first level or Urban.
+- [x] Verified, then **`d3d9_hle.c` deleted** (user's decision: keep it until parity, then one renderer). Against the D3D9 build, on the same pad timeline (frames matched by content, mean |diff| out of 255):
+
+  | | Presents/s, first level | Presents/s, Urban (HD textures) | Diff, first level | Diff, Urban |
+  |---|---|---|---|---|
+  | D3D9 (reference) | 30.0 | 30.0 | — | — |
+  | ANGLE D3D11 | 30.0 | 30.0 (min 30.0) | 1.9 | 4.0 |
+  | ANGLE Vulkan | 30.0 | 30.0 (min 30.0) | 2.3 | 4.3 |
+  | ANGLE desktop GL | 30.0 | 30.0 (min 30.0) | 2.1 | 3.6 |
+
+  Urban's figure is inside its own frame-to-frame variation (D3D9 against itself 5 s later: 1.4–10.6; traffic, camera sway, neon); the difference maps are edges only. Shooter mode (gun, flash, tracers) and skate mode (board) render on ANGLE as on D3D9.
+- [x] `tools.recomp --exclude-manual` takes `gl_hle.c` in place of `d3d9_hle.c`: both define the same 39 entry points, so the lifted code is unchanged.
+- [ ] RenderDoc capture of a frame on `RECOMP_GFX=d3d11` and `vulkan` (ANGLE's calls) to replace the DXVK route for render bugs.
+- [ ] Bump env-map stages and FVF vertex blending, if a later level uses them (the warnings say so).
+
 ## W — Web port (experimental, merged into main)
 
 Research, pros and cons, and decisions: [WEB_PORT_RESEARCH.md](WEB_PORT_RESEARCH.md). Chrome only, built and served locally from the user's own disc. Toolkit work goes in the vendored `xboxrecomp/`.
@@ -252,5 +287,5 @@ Research, pros and cons, and decisions: [WEB_PORT_RESEARCH.md](WEB_PORT_RESEARCH
 - [x] **W3 Emscripten build.** Done: boots, movies, menus and the camp level in Chrome at 30 fps (§8). An `emcmake` preset, `PROXY_TO_PTHREAD` with a pre-sized pool, OffscreenCanvas, the ISO through WORKERFS with an XDVDFS reader, audio through an AudioWorklet, pointer lock, and a web key map. Exit: boots to the title screen in Chrome.
 - [x] **W4 Performance.** Exit met without tuning: the camp level holds 30 fps in Chrome (dips to ~25); profiling and the exe-size cost of compact memory remain open. Chrome profiling, splitting huge or hot functions, and batching uploads. Exit: the first level at 30 fps in Chrome.
 - [x] **W4.1 Monorepo merge.** `main` merged in (P9 and the vendored toolkit). Each build target is a CMake preset (`release`, `gl`, `web`). One lift with `--mmio-range` serves every preset. The page has the unlock and warp cheats (`web_cheat`). Shooter and skate mode stay D3D9-only (`mods_stub.c`).
-- [ ] Shooter and skate mode on `gl`: port `mods_mesh.c` to GL and the mod sounds to Web Audio.
+- [ ] Shooter and skate mode on the web: `mods_mesh.c` draws through GL ES 3 since P10; the mod sounds still need Web Audio (or the APU).
 - [ ] **W5 Packaging.** `tools/web_port.py`, which goes from disc to a static `web/` folder, plus `serve.py` sending COOP/COEP. Exit: a fresh clone and the user's ISO reach a playable page with one command.

@@ -1,11 +1,11 @@
 /*
  * gl_hle.c: the game's Xbox D3D8 (XDK 5849) mapped onto OpenGL ES 3.0 --
- * WebGL2 in the browser, a GL 4.3 core context (which takes ES 3.00 shaders)
- * on Windows. The second host back end beside d3d9_hle.c: the same wrapped
- * entry points, the same guest side (d3d_hle_shared.h), and a build compiles
- * one of the two (RECOMP_RENDERER in CMakeLists.txt).
+ * WebGL2 in the browser, ANGLE on Windows, which runs it on Direct3D 11,
+ * Vulkan or desktop GL (RECOMP_GFX). The guest side (wrapped entry points,
+ * guest state, vertex declarations, the NV2A microcode decoder) is in
+ * d3d_hle_shared.h.
  *
- * D3D9 brought a fixed-function pipeline; GL ES has none, so this generates
+ * D3D8 has a fixed-function pipeline; GL ES has none, so this generates
  * GLSL per state combination: the vertex half from the FVF, lighting and
  * texture-coordinate state (or the title's own vertex program, translated
  * from NV2A microcode), the fragment half from the texture stages, fog and
@@ -27,176 +27,25 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__EMSCRIPTEN__)
 #include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>
+#if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
 #else
+/* ANGLE (tools/build_angle.cmd): GL ES 3 on D3D11, Vulkan or desktop GL. */
 #include <windows.h>
-#include <GL/gl.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <EGL/eglext_angle.h>
 #endif
 
 #include "overlay.h"
 #include "d3d_hle_shared.h"
 #include "d3d8_swizzle.h"
-
-/* -- GL entry points ---------------------------------------------------------
- * Under Emscripten they are the GLES3 headers' functions. On Windows,
- * opengl32.dll exports GL 1.1 only and the rest come from wglGetProcAddress:
- * every function used here is in this list, as a pointer named after it. */
-
-#if !defined(__EMSCRIPTEN__)
-typedef char GLchar;
-typedef ptrdiff_t GLsizeiptr;
-typedef ptrdiff_t GLintptr;
-#define GL_TEXTURE0 0x84C0
-#define GL_TEXTURE_CUBE_MAP 0x8513
-#define GL_TEXTURE_CUBE_MAP_POSITIVE_X 0x8515
-#define GL_CLAMP_TO_EDGE 0x812F
-#define GL_MIRRORED_REPEAT 0x8370
-#define GL_TEXTURE_WRAP_R 0x8072
-#define GL_TEXTURE_MIN_LOD 0x813A
-#define GL_TEXTURE_MAX_LEVEL 0x813D
-#define GL_FRAMEBUFFER 0x8D40
-#define GL_READ_FRAMEBUFFER 0x8CA8
-#define GL_DRAW_FRAMEBUFFER 0x8CA9
-#define GL_RENDERBUFFER 0x8D41
-#define GL_COLOR_ATTACHMENT0 0x8CE0
-#define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
-#define GL_DEPTH24_STENCIL8 0x88F0
-#define GL_RGBA8 0x8058
-#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
-#define GL_ARRAY_BUFFER 0x8892
-#define GL_ELEMENT_ARRAY_BUFFER 0x8893
-#define GL_STREAM_DRAW 0x88E0
-#define GL_VERTEX_SHADER 0x8B31
-#define GL_FRAGMENT_SHADER 0x8B30
-#define GL_COMPILE_STATUS 0x8B81
-#define GL_LINK_STATUS 0x8B82
-#define GL_INFO_LOG_LENGTH 0x8B84
-#define GL_FUNC_ADD 0x8006
-#define GL_NUM_EXTENSIONS 0x821D
-#define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
-#define GL_COMPRESSED_RGBA_S3TC_DXT3_EXT 0x83F2
-#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
-
-#define GL_FUNCS(X) \
-    X(void, glActiveTexture, (GLenum)) \
-    X(void, glCompressedTexImage2D, (GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void *)) \
-    X(void, glGenFramebuffers, (GLsizei, GLuint *)) \
-    X(void, glBindFramebuffer, (GLenum, GLuint)) \
-    X(void, glFramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint)) \
-    X(void, glFramebufferRenderbuffer, (GLenum, GLenum, GLenum, GLuint)) \
-    X(GLenum, glCheckFramebufferStatus, (GLenum)) \
-    X(void, glGenRenderbuffers, (GLsizei, GLuint *)) \
-    X(void, glDeleteRenderbuffers, (GLsizei, const GLuint *)) \
-    X(void, glBindRenderbuffer, (GLenum, GLuint)) \
-    X(void, glRenderbufferStorage, (GLenum, GLenum, GLsizei, GLsizei)) \
-    X(void, glBlitFramebuffer, (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)) \
-    X(void, glBlendEquation, (GLenum)) \
-    X(void, glBlendColor, (GLfloat, GLfloat, GLfloat, GLfloat)) \
-    X(void, glClearDepthf, (GLfloat)) \
-    X(void, glDepthRangef, (GLfloat, GLfloat)) \
-    X(GLuint, glCreateShader, (GLenum)) \
-    X(void, glShaderSource, (GLuint, GLsizei, const GLchar *const *, const GLint *)) \
-    X(void, glCompileShader, (GLuint)) \
-    X(void, glGetShaderiv, (GLuint, GLenum, GLint *)) \
-    X(void, glGetShaderInfoLog, (GLuint, GLsizei, GLsizei *, GLchar *)) \
-    X(void, glDeleteShader, (GLuint)) \
-    X(GLuint, glCreateProgram, (void)) \
-    X(void, glAttachShader, (GLuint, GLuint)) \
-    X(void, glBindAttribLocation, (GLuint, GLuint, const GLchar *)) \
-    X(void, glLinkProgram, (GLuint)) \
-    X(void, glGetProgramiv, (GLuint, GLenum, GLint *)) \
-    X(void, glGetProgramInfoLog, (GLuint, GLsizei, GLsizei *, GLchar *)) \
-    X(void, glUseProgram, (GLuint)) \
-    X(GLint, glGetUniformLocation, (GLuint, const GLchar *)) \
-    X(void, glUniform1i, (GLint, GLint)) \
-    X(void, glUniform1f, (GLint, GLfloat)) \
-    X(void, glUniform4fv, (GLint, GLsizei, const GLfloat *)) \
-    X(void, glUniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat *)) \
-    X(void, glGenBuffers, (GLsizei, GLuint *)) \
-    X(void, glBindBuffer, (GLenum, GLuint)) \
-    X(void, glBufferData, (GLenum, GLsizeiptr, const void *, GLenum)) \
-    X(void, glGenVertexArrays, (GLsizei, GLuint *)) \
-    X(void, glBindVertexArray, (GLuint)) \
-    X(void, glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void *)) \
-    X(void, glEnableVertexAttribArray, (GLuint)) \
-    X(void, glDisableVertexAttribArray, (GLuint)) \
-    X(void, glVertexAttrib4f, (GLuint, GLfloat, GLfloat, GLfloat, GLfloat)) \
-    X(void, glGenSamplers, (GLsizei, GLuint *)) \
-    X(void, glBindSampler, (GLuint, GLuint)) \
-    X(void, glSamplerParameteri, (GLuint, GLenum, GLint)) \
-    X(void, glSamplerParameterf, (GLuint, GLenum, GLfloat)) \
-    X(const GLubyte *, glGetStringi, (GLenum, GLuint))
-
-#define GL_DECL(ret, name, args) typedef ret (APIENTRY *PFN_##name) args; static PFN_##name p_##name;
-GL_FUNCS(GL_DECL)
-#define glActiveTexture p_glActiveTexture
-#define glCompressedTexImage2D p_glCompressedTexImage2D
-#define glGenFramebuffers p_glGenFramebuffers
-#define glBindFramebuffer p_glBindFramebuffer
-#define glFramebufferTexture2D p_glFramebufferTexture2D
-#define glFramebufferRenderbuffer p_glFramebufferRenderbuffer
-#define glCheckFramebufferStatus p_glCheckFramebufferStatus
-#define glGenRenderbuffers p_glGenRenderbuffers
-#define glDeleteRenderbuffers p_glDeleteRenderbuffers
-#define glBindRenderbuffer p_glBindRenderbuffer
-#define glRenderbufferStorage p_glRenderbufferStorage
-#define glBlitFramebuffer p_glBlitFramebuffer
-#define glBlendEquation p_glBlendEquation
-#define glBlendColor p_glBlendColor
-#define glClearDepthf p_glClearDepthf
-#define glDepthRangef p_glDepthRangef
-#define glCreateShader p_glCreateShader
-#define glShaderSource p_glShaderSource
-#define glCompileShader p_glCompileShader
-#define glGetShaderiv p_glGetShaderiv
-#define glGetShaderInfoLog p_glGetShaderInfoLog
-#define glDeleteShader p_glDeleteShader
-#define glCreateProgram p_glCreateProgram
-#define glAttachShader p_glAttachShader
-#define glBindAttribLocation p_glBindAttribLocation
-#define glLinkProgram p_glLinkProgram
-#define glGetProgramiv p_glGetProgramiv
-#define glGetProgramInfoLog p_glGetProgramInfoLog
-#define glUseProgram p_glUseProgram
-#define glGetUniformLocation p_glGetUniformLocation
-#define glUniform1i p_glUniform1i
-#define glUniform1f p_glUniform1f
-#define glUniform4fv p_glUniform4fv
-#define glUniformMatrix4fv p_glUniformMatrix4fv
-#define glGenBuffers p_glGenBuffers
-#define glBindBuffer p_glBindBuffer
-#define glBufferData p_glBufferData
-#define glGenVertexArrays p_glGenVertexArrays
-#define glBindVertexArray p_glBindVertexArray
-#define glVertexAttribPointer p_glVertexAttribPointer
-#define glEnableVertexAttribArray p_glEnableVertexAttribArray
-#define glDisableVertexAttribArray p_glDisableVertexAttribArray
-#define glVertexAttrib4f p_glVertexAttrib4f
-#define glGenSamplers p_glGenSamplers
-#define glBindSampler p_glBindSampler
-#define glSamplerParameteri p_glSamplerParameteri
-#define glSamplerParameterf p_glSamplerParameterf
-#define glGetStringi p_glGetStringi
-
-static int gl_load(void)
-{
-    HMODULE lib = GetModuleHandleA("opengl32.dll");
-    int ok = 1;
-#define GL_LOAD(ret, name, args) \
-    p_##name = (PFN_##name)(void *)wglGetProcAddress(#name); \
-    if (!p_##name && lib) p_##name = (PFN_##name)(void *)GetProcAddress(lib, #name); \
-    if (!p_##name) { fprintf(stderr, "[GL] missing %s\n", #name); ok = 0; }
-    GL_FUNCS(GL_LOAD)
-    return ok;
-}
-#endif
 
 /* -- Platform: lock, clock, window --------------------------------------- */
 
@@ -280,60 +129,65 @@ EM_JS(void, web_post_frame, (void), {
 
 static void swap_window(void) { web_post_frame(); }
 #else
-static HDC s_hdc;
-static HGLRC s_glrc;
+static EGLDisplay s_egl_dpy;
+static EGLSurface s_egl_surf;
 
+static int has_ext(const char *name)
+{
+    GLint i, n = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+    for (i = 0; i < n; i++)
+        if (!strcmp((const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i), name))
+            return 1;
+    return 0;
+}
+
+/* RECOMP_GFX=d3d11 (default), vulkan or gl: ANGLE's back end. */
 static int ctx_create(void)
 {
-    typedef HGLRC (WINAPI *PFN_cca)(HDC, HGLRC, const int *);
-    typedef BOOL (WINAPI *PFN_swi)(int);
-    static const int attrs[] = {
-        0x2091 /* MAJOR */, 4, 0x2092 /* MINOR */, 3,
-        0x9126 /* PROFILE_MASK */, 1 /* CORE */, 0,
+    static const EGLint cfg_attrs[] = {
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_NONE,
     };
-    PIXELFORMATDESCRIPTOR pfd;
+    static const EGLint ctx_attrs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 0,
+        EGL_CONTEXT_OPENGL_NO_ERROR_KHR, EGL_TRUE,      /* skip ANGLE's validation */
+        EGL_NONE,
+    };
+    const char *gfx = getenv("RECOMP_GFX");
+    EGLAttrib dpy_attrs[] = { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE, EGL_NONE };
     HWND hwnd = (HWND)xbox_FramebufferWindowHwnd();
-    HGLRC tmp;
-    PFN_cca cca;
-    PFN_swi swi;
-    int pf, i, n = 0;
+    EGLConfig cfg;
+    EGLContext ctx;
+    EGLint n = 0;
 
     if (!hwnd)
         return -1;                          /* no window yet: try again later */
-    memset(&pfd, 0, sizeof pfd);
-    pfd.nSize = sizeof pfd;
-    pfd.nVersion = 1;
-    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-    pfd.iPixelType = PFD_TYPE_RGBA;
-    pfd.cColorBits = 32;
-    s_hdc = GetDC(hwnd);
-    pf = ChoosePixelFormat(s_hdc, &pfd);
-    if (!pf || !SetPixelFormat(s_hdc, pf, &pfd)) {
-        fprintf(stderr, "[GL] pixel format %d: error %lu\n", pf, GetLastError());
+    if (gfx && !_stricmp(gfx, "vulkan"))
+        dpy_attrs[1] = EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE;
+    else if (gfx && !_stricmp(gfx, "gl"))
+        dpy_attrs[1] = EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE;
+    else if (gfx && *gfx && _stricmp(gfx, "d3d11"))
+        fprintf(stderr, "[GL] RECOMP_GFX=%s unknown; using d3d11\n", gfx);
+    s_egl_dpy = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, (void *)EGL_DEFAULT_DISPLAY, dpy_attrs);
+    if (s_egl_dpy == EGL_NO_DISPLAY || !eglInitialize(s_egl_dpy, NULL, NULL)
+        || !eglChooseConfig(s_egl_dpy, cfg_attrs, &cfg, 1, &n) || !n) {
+        fprintf(stderr, "[GL] EGL display (RECOMP_GFX=%s): error 0x%x\n", gfx ? gfx : "d3d11", eglGetError());
         return 0;
     }
-    tmp = wglCreateContext(s_hdc);
-    if (!tmp || !wglMakeCurrent(s_hdc, tmp)) {
-        fprintf(stderr, "[GL] wglCreateContext: error %lu\n", GetLastError());
+    s_egl_surf = eglCreateWindowSurface(s_egl_dpy, cfg, (EGLNativeWindowType)hwnd, NULL);
+    ctx = eglCreateContext(s_egl_dpy, cfg, EGL_NO_CONTEXT, ctx_attrs);
+    if (s_egl_surf == EGL_NO_SURFACE || ctx == EGL_NO_CONTEXT
+        || !eglMakeCurrent(s_egl_dpy, s_egl_surf, s_egl_surf, ctx)) {
+        fprintf(stderr, "[GL] EGL context: error 0x%x\n", eglGetError());
         return 0;
     }
-    cca = (PFN_cca)(void *)wglGetProcAddress("wglCreateContextAttribsARB");
-    s_glrc = cca ? cca(s_hdc, NULL, attrs) : NULL;
-    wglMakeCurrent(NULL, NULL);
-    wglDeleteContext(tmp);
-    if (!s_glrc || !wglMakeCurrent(s_hdc, s_glrc) || !gl_load()) {
-        fprintf(stderr, "[GL] GL 4.3 core context: error %lu\n", GetLastError());
-        return 0;
-    }
-    swi = (PFN_swi)(void *)wglGetProcAddress("wglSwapIntervalEXT");
-    if (swi)
-        swi(0);
-    glGetIntegerv(GL_NUM_EXTENSIONS, &n);
-    for (i = 0; i < n; i++)
-        if (!strcmp((const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i), "GL_EXT_texture_compression_s3tc"))
-            s_s3tc = 1;
+    eglSwapInterval(s_egl_dpy, 0);
+    /* ANGLE names DXT1/3/5 three ways; GL_EXT_texture_compression_s3tc where it can. */
+    s_s3tc = has_ext("GL_EXT_texture_compression_s3tc")
+          || (has_ext("GL_EXT_texture_compression_dxt1") && has_ext("GL_ANGLE_texture_compression_dxt5"));
     {
-        /* 640x480 a scale step, shrunk to fit the screen; as d3d9_hle.c. */
+        /* 640x480 times the render scale, shrunk to fit the screen. */
         RECT wa, wr = { 0, 0, (LONG)(640 * s_scale), (LONG)(480 * s_scale) };
         SystemParametersInfoA(SPI_GETWORKAREA, 0, &wa, 0);
         while (wr.right > (wa.right - wa.left) * 9 / 10 || wr.bottom > (wa.bottom - wa.top) * 9 / 10) {
@@ -357,7 +211,7 @@ static void win_size(int *w, int *h)
     }
 }
 
-static void swap_window(void) { SwapBuffers(s_hdc); }
+static void swap_window(void) { eglSwapBuffers(s_egl_dpy, s_egl_surf); }
 #endif
 
 static int dev_ready(void)
@@ -452,8 +306,15 @@ static HostRt *rt_get(uint32_t res, int depth)
 
 static uint32_t rt_guest_bytes(const HostRt *r) { return r->pitch * r->h; }
 
-/* What the CPU wrote to a colour target (the XMV player decodes movie frames
- * straight into the back buffer) goes up to the host target; see d3d9_hle.c. */
+/* Guest memory of a colour target is what the CPU sees of it. Nothing on the
+ * host draws there: Clear fills it, the CPU writes the rest (the XMV player
+ * decodes movie frames straight into the back buffer). So when its hash has
+ * changed since we last looked, the CPU wrote it, and the host target takes
+ * the new pixels.
+ *
+ * ponytail: the sampled hash misses a CPU write of a few pixels; the movie
+ * player rewrites the whole frame. GPU results are not copied back to guest
+ * memory for CPU readers. */
 static uint8_t *s_conv;
 static size_t s_conv_cap;
 
@@ -733,12 +594,9 @@ static GLuint tex_create(const XFmt *f, uint32_t data, uint32_t format, uint32_t
     return t;
 }
 
-/* RECOMP_HD_TEX=<dir>: <dir>/<hash>.dds replaces a guest texture (DXT only,
- * so it needs S3TC); see d3d9_hle.c. */
-static GLuint hd_load(uint32_t hash)
+/* A DXT1/3/5 .dds file as a texture, or 0 (needs S3TC). Also mods_mesh.c's. */
+GLuint gl_dds_load(const char *path)
 {
-    static const char *dir = (const char *)-1;
-    char path[512];
     uint8_t hdr[128], *buf = NULL;
     uint32_t w, h, mips, fourcc, bpb, lv, off = 0;
     GLenum fmt;
@@ -746,12 +604,7 @@ static GLuint hd_load(uint32_t hash)
     long n;
     FILE *f;
 
-    if (dir == (const char *)-1)
-        dir = getenv("RECOMP_HD_TEX");
-    if (!dir || !*dir || !s_s3tc)
-        return 0;
-    snprintf(path, sizeof path, "%s/%08x.dds", dir, hash);
-    if (!(f = fopen(path, "rb")))
+    if (!s_s3tc || !(f = fopen(path, "rb")))
         return 0;
     fseek(f, 0, SEEK_END);
     n = ftell(f) - 128;
@@ -779,11 +632,31 @@ static GLuint hd_load(uint32_t hash)
         off += bytes;
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)(lv ? lv - 1 : 0));
-    if (s_hd_hits++ < 8)
-        fprintf(stderr, "[HD] %08x -> %ux%u\n", hash, w, h);
 done:
     free(buf);
     fclose(f);
+    return t;
+}
+
+/* RECOMP_HD_TEX=<dir>: <dir>/<hash>.dds replaces a guest texture (DXT only,
+ * so it needs S3TC; tools/xen_tex.py makes them from the 360 packages). The
+ * hash is the one tex_get keys the cache on, so a texture is replaced exactly
+ * when its guest bytes match; coordinates of swizzled and DXT textures are
+ * normalized, so a bigger texture needs nothing else. */
+static GLuint hd_load(uint32_t hash)
+{
+    static const char *dir = (const char *)-1;
+    char path[512];
+    GLuint t;
+
+    if (dir == (const char *)-1)
+        dir = getenv("RECOMP_HD_TEX");
+    if (!dir || !*dir)
+        return 0;
+    snprintf(path, sizeof path, "%s/%08x.dds", dir, hash);
+    t = gl_dds_load(path);
+    if (t && s_hd_hits++ < 8)
+        fprintf(stderr, "[HD] %08x\n", hash);
     return t;
 }
 
@@ -942,7 +815,7 @@ typedef struct {
 static Prog s_prog[MAX_PROG];
 static int s_nprog;
 
-/* Xbox D3DTOP (see tr_texop in d3d9_hle.c). */
+/* Xbox D3DTOP values: the order differs from PC D3D after BLENDTEXTUREALPHA. */
 enum { XOP_DISABLE = 1, XOP_SELECTARG1, XOP_SELECTARG2, XOP_MODULATE, XOP_MODULATE2X, XOP_MODULATE4X,
        XOP_ADD, XOP_ADDSIGNED, XOP_ADDSIGNED2X, XOP_SUBTRACT, XOP_ADDSMOOTH, XOP_BLENDDIFFUSEALPHA,
        XOP_BLENDCURRENTALPHA, XOP_BLENDTEXTUREALPHA, XOP_BLENDFACTORALPHA, XOP_BLENDTEXTUREALPHAPM,
@@ -994,8 +867,14 @@ static void ff_op(Sb *s, uint32_t op, int st)
     case XOP_MULTIPLYADD: sb(s, "a0 + a1 * a2"); break;
     case XOP_LERP: sb(s, "mix(a2, a1, a0)"); break;
     /* ponytail: PREMODULATE and the bump ops pass the first argument;
-     * bump mapping is not done. */
-    default: sb(s, "a1"); break;
+     * bump mapping is not done. Said once, so a run shows if the title uses them. */
+    default: {
+        static int said;
+        if (!said++)
+            fprintf(stderr, "[GL] texture stage op %u not done (bump or premodulate)\n", op);
+        sb(s, "a1");
+        break;
+    }
     }
 }
 
@@ -1327,7 +1206,9 @@ static void apply_render_state(void)
         int solid = xb_rs(XRS_SOLIDOFFSETENABLE) != 0;
         float slope = solid ? f32(xb_rs(XRS_POLYGONOFFSETZSLOPESCALE)) : 0.0f;
         float units = solid ? f32(xb_rs(XRS_POLYGONOFFSETZOFFSET)) : 0.0f;
-        units -= (float)xb_rs(XRS_ZBIAS) * 256.0f;          /* as d3d9_hle.c, in 2^-24 steps */
+        /* ZBIAS (0..16, larger is nearer) on top, in 2^-24 steps.
+         * ponytail: 256 steps per ZBIAS unit is a guess; tune against xemu. */
+        units -= (float)xb_rs(XRS_ZBIAS) * 256.0f;
         set_cap(GL_POLYGON_OFFSET_FILL, slope != 0.0f || units != 0.0f);
         glPolygonOffset(slope, units);
     }
@@ -1430,7 +1311,11 @@ static void upload_uniforms(const Prog *p)
         glUniformMatrix4fv(p->u_wv, 1, GL_FALSE, wv);
     }
     if (p->u_proj >= 0) {
-        /* The movie quad sits exactly on the far plane; see d3d9_hle.c. */
+        /* The title draws its movie quad exactly on the far plane with
+         * ZFUNC LESS against a depth buffer cleared to 1.0. The NV2A's
+         * integer depth rounds that below 1; the host compares (and clips)
+         * in float. Scaling projected z by a hair under 1 keeps the order of
+         * everything else. */
         Mat pr = s_xf[1];
         const float kz = 1.0f - 1.0f / 4194304.0f;
         pr.m[2] *= kz; pr.m[6] *= kz; pr.m[10] *= kz; pr.m[14] *= kz;
@@ -1537,8 +1422,12 @@ static void fvf_attribs(uint32_t fvf, uint32_t stride)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, pos == 0x004 ? 4 : 3, GL_FLOAT, GL_FALSE, (GLsizei)stride, (const void *)(uintptr_t)off);
     off += pos == 0x004 ? 16 : 12;
-    if (pos >= 0x006 && pos <= 0x00C)             /* ponytail: blend weights are skipped, world0 only */
+    if (pos >= 0x006 && pos <= 0x00C) {           /* ponytail: blend weights are skipped, world0 only */
+        static int said;
+        if (!said++)
+            fprintf(stderr, "[GL] FVF blend weights skipped (fvf 0x%x)\n", fvf);
         off += 4 * ((pos - 0x004) / 2);
+    }
     if (fvf & 0x010) {
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, (GLsizei)stride, (const void *)(uintptr_t)off);
@@ -1566,8 +1455,9 @@ static void fvf_attribs(uint32_t fvf, uint32_t stride)
 static uint8_t *s_vsbuf;
 static size_t s_vsbuf_cap;
 
-/* Vertices [lo, hi] for a vertex program, as float4 per register; see
- * d3d9_hle.c's vs_vertices. */
+/* Vertices base+[lo, hi] for a program, as float4 slots. Stream 0 is `up`
+ * when the draw supplies it. Returns the buffer (index 0 = vertex lo) and its
+ * stride, and in *regs_out the registers it fills. */
 static const void *vs_vertices(HostVs *h, uint32_t base, uint32_t lo, uint32_t hi,
                                const uint8_t *up, uint32_t up_stride, uint32_t *stride_out, uint16_t *regs_out)
 {
@@ -1633,7 +1523,7 @@ static Prog *prepare_draw(HostVs **vs_out)
         if (!vs->glsl) {
             Sb s = { s_vsh_body, sizeof s_vsh_body, 0 };
             s_vsh_body[0] = 0;
-            vsh_body(vs->mc, vs->nmc, &s, &vs->inputs, &vs->uses_vp, 1);
+            vsh_body(vs->mc, vs->nmc, &s, &vs->inputs, &vs->uses_vp);
             vs->glsl = (char *)malloc(s.len + 1);
             memcpy(vs->glsl, s_vsh_body, s.len + 1);
         }
@@ -1871,6 +1761,19 @@ static void present(uint32_t data)
 #endif
     if (!r || !r->tex)
         return;
+#ifdef RECOMP_MODS
+    /* Shooter and skate mode: the gun, flashes, tracers and board, into the
+     * buffer being presented, against the scene's depth. */
+    if (s_cur_ds) {
+        glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->tex, 0);
+        s_cur_rt = NULL;                    /* the draw FBO's attachments changed */
+        glViewport(0, 0, (GLsizei)(r->w * s_scale), (GLsizei)(r->h * s_scale));
+        glDepthRangef(0.0f, 1.0f);
+        gun_world_flush(NULL);
+        glBindVertexArray(s_vao);
+    }
+#endif
     dump_bmp(r);
     win_size(&ww, &wh);
     {
@@ -1901,6 +1804,7 @@ static void present(uint32_t data)
         s_st.vdecls = (unsigned)s_nprog; s_st.vdecls_max = MAX_PROG;
         s_st.scale = s_scale; s_st.sc_w = (unsigned)ww; s_st.sc_h = (unsigned)wh; s_st.frame = s_frame;
         s_st.hd_textures = s_hd_hits;
+        s_st.api = (const char *)glGetString(GL_RENDERER);
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
         {
             /* The pointer over the game's menus, in guest 640x480. */
@@ -1919,13 +1823,18 @@ static void present(uint32_t data)
 #endif
             if (gx >= 0 && game_widescreen())   /* the menus are squeezed to the middle 3/4 */
                 gx = 320 + (gx - 320) * 4 / 3;
-            /* As d3d9_hle.c: no hover while the King is in play. */
+            /* The mouse is locked only while the King is in play; the
+             * front end's page stays "active" under a level, so hover only
+             * when not in play. */
             {
                 int play = game_in_play();
                 menu_mouse_update(play ? -1 : gx, gy);
                 mkb_set_menu_cursor(!play);
             }
         }
+#endif
+#if !defined(__EMSCRIPTEN__)
+        overlay_present(NULL, xbox_FramebufferWindowHwnd(), NULL, &s_st);
 #endif
         swap_window();
     }
@@ -1942,7 +1851,9 @@ static void hle_Swap(void)                  /* Swap(Flags) */
 
     sub_00200110_gen();
     if (flags == 0 || (flags & 4)) {
-        /* At most one present per 60 Hz frame; see d3d9_hle.c. */
+        /* A flip waits for vblank on the Xbox (presentation interval one).
+         * Loading loops swap as fast as they can otherwise: at most one
+         * present per 60 Hz frame. */
         static double last;
         double now = now_ms();
         if (last) {
@@ -2174,7 +2085,7 @@ static void hle_SetVertexShaderConstantNotInline(void) { vsc_mirror((int32_t)g_e
 
 /* -- Init -------------------------------------------------------------------- */
 
-void d3d9_hle_init(void)
+void gl_hle_init(void)
 {
     const char *e = getenv("RECOMP_SCALE");
     int i;

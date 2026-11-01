@@ -371,7 +371,7 @@ static void mouse_frame(void)
 
 /* The King is under control: the camera stick was read just now. Menus,
  * loading and the title screens do not read it, so the pointer is free
- * there (d3d9_hle.c present). */
+ * there (gl_hle.c present). */
 int game_in_play(void)
 {
     return GetTickCount() - s_cam_read_ms < 500;
@@ -441,7 +441,7 @@ void sub_0005F480(void)
 /* The title is 4:3 only: XGetVideoFlags (0x1BD963) is read for 480p and
  * nothing else. 16:9 is done the way a widescreen TV did it, anamorphic:
  * the guest still draws 640x480, the 3D squeezed to 3/4 width, and the
- * present stretches it back out to 16:9 (d3d9_hle.c).
+ * present stretches it back out to 16:9 (gl_hle.c).
  *
  * 3D: the camera's FOV setter (0x12CA70, cdecl (fov_x, fov_y); fov_y equal
  * to the sentinel at 0x2B039C means "from fov_x and the 4:3 aspect at

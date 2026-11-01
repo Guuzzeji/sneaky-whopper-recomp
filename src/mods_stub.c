@@ -1,13 +1,13 @@
 /*
- * mods_stub.c: the joke modes' host side for the gl renderer (native GL and
- * the web build). The gun, effects and board are drawn by mods_mesh.c on
- * Direct3D 9 and the sounds play through XAudio2 (cod4_sound.c), neither of
- * which exists here, so shooter and skate mode report themselves unavailable
- * (shooter_available in recomp_manual.c, skate_available below) and these
- * entry points do nothing. The game-side cheats (unlocks, warp) still work.
+ * mods_stub.c: the joke modes' host side for the web build. The sounds play
+ * through XAudio2 (cod4_sound.c), which the browser lacks, so shooter and
+ * skate mode report themselves unavailable (shooter_available in
+ * recomp_manual.c, skate_available below) and these entry points do
+ * nothing. The game-side cheats (unlocks, warp) still work.
  *
- * ponytail: modes off on gl; port mods_mesh.c to GL and the sounds to the
- * APU or Web Audio when they are wanted in the browser.
+ * ponytail: modes off on the web; mods_mesh.c already draws through GL ES 3,
+ * so the sounds (APU or Web Audio) are what is left when they are wanted in
+ * the browser.
  */
 #include <stdint.h>
 #include "overlay.h"

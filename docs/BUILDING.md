@@ -4,10 +4,10 @@ This project turns the original Xbox `default.xbe` of *Burger King: Sneak King* 
 
 | Build | Preset | Output | Status |
 |---|---|---|---|
-| Windows (Direct3D 9) | `release` | `build\sneakking_recomp.exe` | The main build. Plays the whole game. Has the F1 overlay, the cheats and the joke modes. |
+| Windows (ANGLE: Direct3D 11, Vulkan or OpenGL) | `release` | `build\sneakking_recomp.exe` | The main build. Plays the whole game. Has the F1 overlay, the cheats and the joke modes. |
 | Web (WebAssembly, Chrome) | `web` | `build-web\sneakking_recomp.{js,wasm}` | Experimental. Boots, plays the movies and menus, and runs the first level at about 30 fps. Has the unlock and warp cheats. |
 
-Two more presets are for development. `relwithdebinfo` is the Windows build with a PDB. `gl` is the web build's renderer and memory layout as a Windows exe, so you can debug the web path in Visual Studio.
+Two more presets are for development. `relwithdebinfo` is the Windows build with a PDB. `gl` is the web build's memory layout as a Windows exe, so you can debug the web path in Visual Studio.
 
 You must supply the game yourself. The repo holds no game data: no ISO, XBE, extracted files or lifted code. Everything below starts from a dump of your own disc.
 
@@ -41,11 +41,12 @@ The lifted code runs on the toolkit's model of the Xbox:
 
 The game links the XDK's Direct3D 8. We wrap its entry points (`sub_X` becomes `hle_*`) and replay each call on a host API. The setters run the lifted body and mirror the state. The draws, clears and the present are replaced.
 
-- `src/d3d9_hle.c`: Direct3D 9 on Windows. NV2A vertex programs become `vs_2_0` HLSL.
-- `src/gl_hle.c`: OpenGL ES 3 / WebGL2, for the browser and the `gl` preset. NV2A vertex programs become GLSL ES 3.00.
-- `src/d3d_hle_shared.h`: the guest side both renderers share. It holds the guest state addresses, argument access, resource decoding, vertex declarations and the NV2A vertex program decoder.
+- `src/gl_hle.c`: OpenGL ES 3. NV2A vertex programs become GLSL ES 3.00, and D3D8's fixed function (texture stages, lighting, fog, alpha test) becomes generated GLSL. In the browser it runs on WebGL2. On Windows it runs on [ANGLE](https://chromium.googlesource.com/angle/angle), which translates GL ES to **Direct3D 11, Vulkan or desktop OpenGL**. `RECOMP_GFX=d3d11` (the default), `vulkan` or `gl` picks one at startup. It is the same stack Chrome uses for WebGL, so the native and web builds share one renderer.
+- `src/d3d_hle_shared.h`: the guest side. It holds the guest state addresses, argument access, resource decoding, vertex declarations and the NV2A vertex program decoder.
 
-The CMake option `RECOMP_RENDERER` (`d3d9` or `gl`) picks the renderer. The presets set it for you.
+Until P10 (`docs/ROADMAP.md`) the Windows build drew through Direct3D 9 (`src/d3d9_hle.c`, in git history). The ANGLE path was checked against it frame by frame before it was removed.
+
+**Why ANGLE, not a D3D11 or Vulkan renderer of our own:** `gl_hle.c` already does everything D3D9 did in fixed function, as shaders, and ANGLE turns it into each API with its run-time shader compiler. Our shaders are made at run time (one per vertex program and per fixed-function state), which rules out libraries that compile shaders offline (bgfx). The earlier D3D11 attempt (P5–P7) failed because of the NV2A pushbuffer executor in front of it, not because of D3D11.
 
 ### 4. The host
 
@@ -73,7 +74,7 @@ The cheats live on the game side in `src/recomp_manual.c`. They read and write g
 | Unlock, warp | yes | yes |
 | Shooter, skate | yes, when their files are in `game/mods/` | no |
 
-The joke modes draw with Direct3D 9 (`mods_mesh.c`) and play sounds through XAudio2 (`cod4_sound.c`). The `gl` and `web` presets link `src/mods_stub.c` in place of those files, so both modes report "unavailable" there. Porting them is an open item in `docs/ROADMAP.md`.
+The joke modes draw through the renderer (`mods_mesh.c`, GL ES 3) and play sounds through XAudio2 (`cod4_sound.c`). The `web` preset links `src/mods_stub.c` in place of those files, so both modes report "unavailable" there.
 
 ---
 
@@ -105,7 +106,7 @@ Run these from `xboxrecomp\`, with `$py` set to `..\.venv\Scripts\python.exe`, `
 & $py tools\ghidra_naming\merge_names.py --names-json $a\names_combined.json --functions-json $a\disasm\functions.json --apply   # only if you have names_combined.json
 & $py -m tools.func_id $x --functions $a\disasm\functions.json --strings $a\disasm\strings.json --xrefs $a\disasm\xrefs.json -o $a\func_id
 & $py -m tools.abi_analysis $x --disasm-dir $a\disasm --func-id-dir $a\func_id --output-dir $a\abi
-& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir ..\src\recomp\gen --game-name "Sneak King" --exclude-manual ..\src\recomp_manual.c --exclude-manual ..\src\d3d9_hle.c --exclude-manual ..\src\d3d_hle_shared.h --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
+& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir ..\src\recomp\gen --game-name "Sneak King" --exclude-manual ..\src\recomp_manual.c --exclude-manual ..\src\gl_hle.c --exclude-manual ..\src\d3d_hle_shared.h --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
 ```
 
 Keep the three `--mmio-range` arguments, because the web build needs them. Keep all three `--exclude-manual` files too. They tell the lifter which functions our code overrides or wraps; without `d3d_hle_shared.h` the link fails with unresolved `sub_X_gen` symbols. Run only the last command again after you change `recomp_manual.c` overrides or the toolkit's lifter.
@@ -113,6 +114,14 @@ Keep the three `--mmio-range` arguments, because the web build needs them. Keep 
 Optional: the 360 HD textures. Run `tools/xen_tex.py <pkg.xbp> <pkg.xen> -o game/hd` on the 360 packages; both builds use `game/hd` when it exists.
 
 ### Step 2a: the Windows build
+
+First build ANGLE, once. It needs git and takes about 3 GB and half an hour; the source goes to `..\angle` next to the repo and the DLLs, import libraries and headers to `third_party\angle\` (not committed):
+
+```
+tools\build_angle.cmd
+```
+
+Then the game:
 
 ```
 cmake --preset release
@@ -173,11 +182,12 @@ This is the Windows host with `gl_hle.c` and the compact memory layout: the web 
 | Path | What |
 |---|---|
 | `src/main.c`, `src/main_web.c` | Host entry points: Windows and web |
-| `src/d3d9_hle.c`, `src/gl_hle.c`, `src/d3d_hle_shared.h` | The two D3D8 HLE renderers and their shared guest side |
+| `src/gl_hle.c`, `src/d3d_hle_shared.h` | The D3D8 HLE renderer (GL ES 3 on ANGLE or WebGL2) and its guest side |
+| `tools/build_angle.cmd`, `third_party/angle/` | Builds ANGLE with its D3D11, Vulkan and GL back ends; its output (not committed) |
 | `src/recomp_manual.c` | Overrides of lifted functions, game hooks, cheats, shooter mode |
 | `src/overlay.cpp`, `src/overlay.h` | The F1 overlay (Windows) and the game-side API it uses |
 | `src/web_host.c`, `web/index.html` | Browser input, the cheat bridge, the page |
-| `src/skate.c`, `src/mods_mesh.c`, `src/cod4_*.c`, `src/mods_stub.c` | Joke modes (D3D9) and their stubs for `gl` |
+| `src/skate.c`, `src/mods_mesh.c`, `src/cod4_*.c`, `src/mods_stub.c` | Joke modes and their stubs for `web` |
 | `src/recomp/gen/` | Lifted code (generated, gitignored) |
 | `xboxrecomp/` | The toolkit: pipeline tools and runtime libraries |
 | `tools/` | Our scripts: web build and server, texture and mod extractors |
@@ -188,4 +198,7 @@ This is the Windows host with `gl_hle.c` and the compact memory layout: the web 
 - **The web page says "Not cross-origin isolated".** You opened the file directly or through another server. Use `tools/serve.py`.
 - **The web build links, but the game hangs on boot in Chrome.** The lifted code was generated without `--mmio-range`. Run the `tools.recomp` step again with the three ranges, then rebuild.
 - **No sound and the game quits (Windows).** `RECOMP_AC97_READY` was set to `0`. `main.c` turns it on by default.
+- **`ANGLE not found` when configuring.** Run `tools\build_angle.cmd` first.
+- **`tools\build_angle.cmd` fails with an SDK error.** Chromium's toolchain pins a Windows SDK; the script points it at the newest one installed (`Windows Kits\10\Include`). Install a recent Windows 11 SDK if none is there.
+- **The window stays black with `RECOMP_GFX=vulkan`.** `vulkan-1.dll` must sit next to the exe (the build copies it from `third_party\angle\bin`); ANGLE does not look in System32. `[GL] EGL display` in the log names the back end that failed.
 - **The shooter or skate cheat is missing.** You need the `release` preset and the extracted files in `game/mods/` (`docs/MODS.md`).

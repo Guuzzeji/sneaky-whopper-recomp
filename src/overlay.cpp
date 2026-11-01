@@ -1,14 +1,13 @@
 /* Debug overlay: Dear ImGui drawn over the presented frame.
  *
- *   F1  the panels (D3D9, health, cheats); the mouse and keys go to them
+ *   F1  the panels (renderer, health, cheats); the mouse and keys go to them
  *   F2  a frame-rate line in the corner
  *
  * The framebuffer window belongs to the toolkit's window thread, and ImGui
  * is not thread-safe, so the window hook only queues messages; present()
  * (the game thread) feeds them to ImGui, draws and renders. Everything here
- * runs under d3d9_hle.c's device lock. */
+ * runs under gl_hle.c's lock. */
 #include <windows.h>
-#include <d3d9.h>
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <math.h>
@@ -17,7 +16,7 @@
 #include <algorithm>
 
 #include "imgui.h"
-#include "imgui_impl_dx9.h"
+#include "imgui_impl_opengl3.h"
 #include "imgui_impl_win32.h"
 
 #include "overlay.h"
@@ -184,6 +183,8 @@ static void panel_d3d9(const OverlayD3dStats *st)
                 s_fps, sum / HIST, mx, (int)HIST);
     ImGui::PlotLines("##ms", s_ms, HIST, s_hist_pos, "frame time (ms)", 0.0f, 50.0f,
                      ImVec2(-1, 80));
+    if (st->api)
+        ImGui::Text("Renderer: %s", st->api);
     if (ImGui::BeginTable("d3d", 2, ImGuiTableFlags_SizingFixedFit)) {
         auto row = [](const char *k, const char *fmt, unsigned a, unsigned b = 0) {
             ImGui::TableNextRow();
@@ -502,7 +503,6 @@ static void panel_cheats(const OverlayGameInfo &gi)
 extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const OverlayD3dStats *st)
 {
     static bool hooked, ready;
-    IDirect3DDevice9 *dev = (IDirect3DDevice9 *)dev_;
     HWND hwnd = (HWND)hwnd_;
 
     if (!hooked) {
@@ -526,7 +526,7 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
         io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         ImGui::StyleColorsDark();
         ImGui_ImplWin32_Init(hwnd);
-        ImGui_ImplDX9_Init(dev);
+        ImGui_ImplOpenGL3_Init("#version 300 es");
         ready = true;
     }
     drain_messages();
@@ -534,7 +534,7 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
     OverlayGameInfo gi;
     game_info(&gi);
 
-    ImGui_ImplDX9_NewFrame();
+    ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     shooter_overlay();
@@ -552,7 +552,7 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
         ImGui::SetNextWindowSize(ImVec2(520, 560), ImGuiCond_FirstUseEver);
         ImGui::Begin("Sneak King debug (F1 closes)");
         if (ImGui::BeginTabBar("tabs")) {
-            if (ImGui::BeginTabItem("D3D9")) { panel_d3d9(st); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Renderer")) { panel_d3d9(st); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Health")) { panel_health(gi); ImGui::EndTabItem(); }
             if (ImGui::BeginTabItem("Cheats")) { panel_cheats(gi); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
@@ -561,24 +561,8 @@ extern "C" void overlay_present(void *dev_, void *hwnd_, void *bb_, const Overla
     }
     ImGui::EndFrame();
 
-    /* Into the swap chain's back buffer, leaving the device as the guest
-     * state mirror expects it: the backend restores its own state block, and
-     * the targets and viewport are put back here. */
-    IDirect3DSurface9 *rt = NULL, *ds = NULL;
-    D3DVIEWPORT9 vp;
-    dev->GetRenderTarget(0, &rt);
-    dev->GetDepthStencilSurface(&ds);
-    dev->GetViewport(&vp);
-    dev->SetRenderTarget(0, (IDirect3DSurface9 *)bb_);
-    dev->SetDepthStencilSurface(NULL);
-    if (SUCCEEDED(dev->BeginScene())) {
-        ImGui::Render();
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-        dev->EndScene();
-    }
-    dev->SetRenderTarget(0, rt);
-    dev->SetDepthStencilSurface(ds);
-    dev->SetViewport(&vp);
-    if (rt) rt->Release();
-    if (ds) ds->Release();
+    /* Into the window's framebuffer, bound by gl_hle.c's present; the backend
+     * saves and restores the GL state it touches. */
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
