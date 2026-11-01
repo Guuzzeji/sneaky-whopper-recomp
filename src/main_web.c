@@ -28,7 +28,7 @@
 extern RECOMP_TLS uint32_t g_esp;
 extern MCPXAPUState *g_apu_state;
 extern int recomp_dispatch_init(void);
-extern void xdk_mainCRTStartup(void);
+extern void sub_000637AA(void);   /* mainCRTStartup; pinned by main.c's --exclude-manual */
 extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
 extern void xbox_OhciInit(void);
 extern void xbox_path_init(const char *game_dir, const char *save_dir);
@@ -169,7 +169,7 @@ int main(void)
     xbox_WatchdogStart();
 
     printf("\nStarting game...\n");
-    xdk_mainCRTStartup();
+    sub_000637AA();
     printf("\nGame returned.\n");
     return 0;
 }

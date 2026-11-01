@@ -80,6 +80,8 @@ The joke modes draw through the renderer (`mods_mesh.c`, GL ES 3) and play sound
 
 ## Getting started
 
+Just want to play on Windows? `sneakking build <your-disc.iso>` in the repo root does all of this for you (`tools/sneakking.py`; the README's Quick start). It installs what is missing, downloads a prebuilt ANGLE, lifts, builds, and puts the game in a portable `dist\SneakKing\` folder with a `settings.ini`. The steps below are the same thing by hand.
+
 ### Prerequisites (both builds)
 
 - Windows 10 or 11.
@@ -90,7 +92,7 @@ The joke modes draw through the renderer (`mods_mesh.c`, GL ES 3) and play sound
 - Python 3.11 or newer, in a venv at the repo root:
   ```
   python -m venv .venv
-  .venv\Scripts\python.exe -m pip install capstone pytest pefile numpy
+  .venv\Scripts\python.exe -m pip install -r requirements.txt pytest
   ```
 - A dump of your own *Sneak King* disc (redump ISO). Put it in the repo root.
 - A machine with about 16 GB of RAM. The generated C files are huge; keep the build at 2 jobs (the presets do this).
@@ -106,16 +108,16 @@ Run these from `xboxrecomp\`, with `$py` set to `..\.venv\Scripts\python.exe`, `
 & $py tools\ghidra_naming\merge_names.py --names-json $a\names_combined.json --functions-json $a\disasm\functions.json --apply   # only if you have names_combined.json
 & $py -m tools.func_id $x --functions $a\disasm\functions.json --strings $a\disasm\strings.json --xrefs $a\disasm\xrefs.json -o $a\func_id
 & $py -m tools.abi_analysis $x --disasm-dir $a\disasm --func-id-dir $a\func_id --output-dir $a\abi
-& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir ..\src\recomp\gen --game-name "Sneak King" --exclude-manual ..\src\recomp_manual.c --exclude-manual ..\src\gl_hle.c --exclude-manual ..\src\d3d_hle_shared.h --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
+& $py -m tools.recomp $x --all --split 250 --disasm-dir $a\disasm --func-id-dir $a\func_id --abi-dir $a\abi --gen-dir ..\src\recomp\gen --game-name "Sneak King" --exclude-manual ..\src\recomp_manual.c --exclude-manual ..\src\gl_hle.c --exclude-manual ..\src\d3d_hle_shared.h --exclude-manual ..\src\main.c --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
 ```
 
-Keep the three `--mmio-range` arguments, because the web build needs them. Keep all three `--exclude-manual` files too. They tell the lifter which functions our code overrides or wraps; without `d3d_hle_shared.h` the link fails with unresolved `sub_X_gen` symbols. Run only the last command again after you change `recomp_manual.c` overrides or the toolkit's lifter.
+Keep the three `--mmio-range` arguments, because the web build needs them. Keep all four `--exclude-manual` files too. They tell the lifter which functions our code overrides, wraps or calls by name; without `d3d_hle_shared.h` the link fails with unresolved `sub_X_gen` symbols, and without `main.c` with an unresolved `sub_000637AA` (the entry point, which `merge_names` would otherwise rename). Run only the last command again after you change `recomp_manual.c` overrides or the toolkit's lifter.
 
 Optional: the 360 HD textures. Run `tools/xen_tex.py <pkg.xbp> <pkg.xen> -o game/hd` on the 360 packages; both builds use `game/hd` when it exists.
 
 ### Step 2a: the Windows build
 
-First build ANGLE, once. It needs git and takes about 3 GB and half an hour; the source goes to `..\angle` next to the repo and the DLLs, import libraries and headers to `third_party\angle\` (not committed):
+First get ANGLE, once. `sneakking build` downloads the prebuilt zip (the same pinned commit) from the repo's releases; to build it yourself instead, you need Git for Windows, about 9 GB and half an hour; the source goes to `..\angle` next to the repo and the DLLs, import libraries and headers to `third_party\angle\` (not committed):
 
 ```
 tools\build_angle.cmd
@@ -135,9 +137,9 @@ You can also build from an IDE:
 - **Visual Studio 2022:** File > Open > Folder on the repo root, pick a preset in the toolbar, then press F5.
 - **VS Code:** install the CMake Tools and C/C++ extensions. The CMake Tools status bar lists the presets. The "Sneak King" launch configuration debugs the selected build.
 
-Controls: WASD moves, the mouse turns the camera, Shift runs, left click or Space is A, right click or Q is B, E is Y, F toggles first person, and Escape or P is START. The arrows and Enter work in menus. F1 opens the overlay (stats, health, cheats), F2 shows the frame rate and F9 frees the mouse. The bindings are in `mkb.ini`.
+Controls: WASD moves, the mouse turns the camera, Shift runs, left click or Space is A, right click or Q is B, E is Y, F toggles first person, and Escape or P is START. The arrows and Enter work in menus. F1 opens the overlay (stats, health, cheats), F2 shows the frame rate, F9 frees the mouse, and F10 (or Escape held a second) opens the quit dialog. The bindings are in `mkb.ini`.
 
-The exe needs no switches. `CLAUDE.md` lists the `RECOMP_*` environment switches for testing (scale, widescreen, traces, warps, the joke modes).
+The exe needs no switches. `settings.ini` beside `game\` sets any of them without the `RECOMP_` prefix (`GFX=vulkan`); a real environment variable wins. `CLAUDE.md` lists the `RECOMP_*` environment switches for testing (scale, widescreen, traces, warps, the joke modes).
 
 ### Step 2b: the web build (experimental)
 
@@ -198,6 +200,7 @@ This is the Windows host with `gl_hle.c` and the compact memory layout: the web 
 - **The web page says "Not cross-origin isolated".** You opened the file directly or through another server. Use `tools/serve.py`.
 - **The web build links, but the game hangs on boot in Chrome.** The lifted code was generated without `--mmio-range`. Run the `tools.recomp` step again with the three ranges, then rebuild.
 - **No sound and the game quits (Windows).** `RECOMP_AC97_READY` was set to `0`. `main.c` turns it on by default.
+- **Where is the log?** Unless stdout/stderr are redirected, `main.c` writes them to `logs\sneakking.log` beside `game\` (the previous run is `sneakking.prev.log`, the kernel log `logs\xbox_kernel.log`). The head lists the exe, Windows version and every `RECOMP_*` switch in effect. `RECOMP_CONSOLE=1` opens a console instead.
 - **`ANGLE not found` when configuring.** Run `tools\build_angle.cmd` first.
 - **`tools\build_angle.cmd` fails with an SDK error.** Chromium's toolchain pins a Windows SDK; the script points it at the newest one installed (`Windows Kits\10\Include`). Install a recent Windows 11 SDK if none is there.
 - **The window stays black with `RECOMP_GFX=vulkan`.** `vulkan-1.dll` must sit next to the exe (the build copies it from `third_party\angle\bin`); ANGLE does not look in System32. `[GL] EGL display` in the log names the back end that failed.

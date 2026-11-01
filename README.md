@@ -18,6 +18,7 @@ One checkout builds two versions of the game:
 ## Contents
 
 - [How it works](#how-it-works)
+- [Quick start (Windows)](#quick-start-windows)
 - [Setup](#setup)
   - [1. Install the tools](#1-install-the-tools)
   - [2. Get the code](#2-get-the-code)
@@ -50,6 +51,37 @@ One checkout builds two versions of the game:
 
 Fixes go in `src/recomp_manual.c` or the toolkit, never in the generated code. `docs/BUILDING.md` explains each part in depth.
 
+## Quick start (Windows)
+
+If you just want to play, one command builds the game from your own disc image.
+
+1. Install [Git](https://git-scm.com/) and get the code:
+   ```
+   git clone https://github.com/Guuzzeji/sneaky-whopper-recomp
+   cd sneaky-whopper-recomp
+   ```
+2. Make an ISO of your own disc ([Dump the disc](#3-dump-the-disc)).
+3. Build:
+   ```
+   sneakking build path\to\your-disc.iso
+   ```
+
+It asks a few questions first (graphics, resolution, widescreen, HD textures, mouse speed, volume, vsync), then runs on its own for about half an hour:
+
+- It checks for Python and the Visual Studio 2022 C++ build tools. If one is missing, it offers to install it with `winget`, or tells you where to get it.
+- It downloads the graphics libraries (ANGLE), unpacks your disc, checks that it is the right one, turns the game into C and compiles it.
+
+The game ends up in `dist\SneakKing\`: start `SneakKing.exe`. The folder is self-contained, so you can move it anywhere. Your saves are kept separately in `%LOCALAPPDATA%\xboxrecomp`.
+
+- **Settings:** edit `settings.ini` in that folder, or run `sneakking settings`. Each line sets a `RECOMP_*` switch without the prefix: `GFX=vulkan` is `RECOMP_GFX=vulkan` (`CLAUDE.md` lists them all).
+- **Keys:** `mkb.ini` in the same folder.
+- **Something failed?** Run the same command again; it carries on where it stopped. The full log is `dist\SneakKing\build.log`.
+- **Quitting:** F10, or hold Escape for a second, then Enter (or click Quit). Closing the window works too.
+- **Reporting a bug:** each time you play, the game writes `logs\sneakking.log` in its folder (the run before is `sneakking.prev.log`). Attach it, and `build.log` if the build failed. After a crash, a message box says where the log is.
+- `sneakking check` only checks the tools. `sneakking build --force` redoes everything.
+
+The joke modes are not part of this; see [Optional extras](#optional-extras). The rest of this README is the manual route for developers.
+
 ## Setup
 
 Setup takes four stages. You install the tools, dump your disc, and lift the game once. Then you build either version, as often as you like.
@@ -65,7 +97,7 @@ Setup takes four stages. You install the tools, dump your disc, and lift the gam
 | [Emscripten SDK](https://emscripten.org) | web only | Installed in step 5b. |
 | Google Chrome | web only | The web build is tested in Chrome. |
 | About 16 GB of RAM | both | The generated C files are large. |
-| About 10 GB of disk | both | |
+| About 5 GB of disk | both | Another 9 GB if you build ANGLE yourself. |
 
 The build commands need MSVC on the `PATH`. Use one of these:
 
@@ -81,7 +113,7 @@ The build commands need MSVC on the `PATH`. Use one of these:
 git clone https://github.com/Guuzzeji/sneaky-whopper-recomp
 cd sneaky-whopper-recomp
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install capstone pytest pefile numpy
+.venv\Scripts\python.exe -m pip install -r requirements.txt pytest
 ```
 
 The toolkit is already in `xboxrecomp/`, so there's nothing else to clone.
@@ -136,19 +168,20 @@ $a  = "..\analysis"
     --exclude-manual ..\src\recomp_manual.c `
     --exclude-manual ..\src\gl_hle.c `
     --exclude-manual ..\src\d3d_hle_shared.h `
+    --exclude-manual ..\src\main.c `
     --mmio-range 1EC5C0-20FB40 --mmio-range 23CB60-262FEC --mmio-range 2A65C0-2AFB10
 cd ..
 ```
 
 Keep every argument:
-- The three `--exclude-manual` files tell the lifter which functions our code overrides or wraps. Without them, the link fails with unresolved `sub_X_gen` symbols.
+- The four `--exclude-manual` files tell the lifter which functions our code overrides, wraps or calls by name. Without them, the link fails with unresolved `sub_X_gen` or `sub_000637AA` symbols.
 - The three `--mmio-range` sections reach hardware registers through explicit calls. The web build needs them, and the Windows build works with them too, so one lift serves both.
 
 You now have `game/`, `analysis/` and `src/recomp/gen/`, all gitignored.
 
 ### 5a. Build and run on Windows
 
-From the repo root, in a VS developer prompt. First build ANGLE, once (it needs git, about 3 GB and half an hour; the source goes to `..\angle` and the result to `third_party\angle\`):
+From the repo root, in a VS developer prompt. First you need ANGLE in `third_party\angle\`. `sneakking build` downloads a prebuilt copy; or build it yourself, once (it needs Git for Windows, about 9 GB and half an hour; the source goes to `..\angle`):
 
 ```
 tools\build_angle.cmd
@@ -165,6 +198,8 @@ build\sneakking_recomp.exe
 The first build compiles about 70 large generated files and takes a while. Later builds only compile what changed.
 
 The exe needs no settings. It finds `game\` by walking up from its own folder, opens a window, and plays the intro movies. Press Escape or P (START) to skip them.
+
+`settings.ini` beside `game\` sets switches without the `RECOMP_` prefix (`SCALE=3` is `RECOMP_SCALE=3`); a real environment variable wins.
 
 **From an IDE instead:**
 - **Visual Studio 2022:** File > Open > Folder on the repo root, pick `release` in the preset dropdown, then press F5.
@@ -215,7 +250,7 @@ The log under the picture shows boot progress, and the **Hide log** button folds
 
 ### Optional extras
 
-- **360 HD textures.** `tools/xen_tex.py <pkg.xbp> <pkg.xen> -o game/hd` converts the 360 version's textures. Both builds use `game/hd` when it exists.
+- **360 HD textures.** `tools/xen_tex.py <pkg.xbp> <pkg.xen> -o game/hd` converts the 360 version's textures (`sneakking build` converts every package when you answer yes). Both builds use `game/hd` when it exists.
 - **Joke modes** (Windows only). Shooter mode needs your own *Call of Duty 4* PC install, and skate mode needs your own *Skate 3* dump. `docs/MODS.md` has the extraction steps.
 - **Debugging the web path natively.** `cmake --preset gl && cmake --build --preset gl` builds `build-gl\sneakking_recomp.exe`: the web memory layout as a Windows exe, so you can use the Visual Studio debugger.
 
@@ -240,6 +275,7 @@ Both versions use the same layout.
 - F1 opens the overlay (stats and cheats).
 - F2 shows the frame rate.
 - F9 frees the mouse.
+- F10, or Escape held for a second, asks whether to quit (Enter quits, Escape cancels).
 - Edit the bindings in `mkb.ini`.
 - A plugged-in Xbox controller works too.
 
@@ -269,12 +305,13 @@ Both versions use the same layout.
 | Problem | Fix |
 |---|---|
 | `cl`, `cmake` or `ninja` not found | Use the VS developer prompt or the `vcvars64.bat` wrapper (step 1). |
-| `ANGLE not found` when configuring | Run `tools\build_angle.cmd` first. |
-| Link fails with unresolved `sub_X_gen` | The lift missed an `--exclude-manual` file. Run step 4.4 again with all three. |
+| `ANGLE not found` when configuring | Run `sneakking build` (it downloads ANGLE) or `tools\build_angle.cmd`. |
+| Link fails with unresolved `sub_X_gen` or `sub_000637AA` | The lift missed an `--exclude-manual` file. Run step 4.4 again with all four. |
 | The web page says "Not cross-origin isolated" | Open it through `tools\serve.py`, not as a file or from another server. |
 | The web build hangs on boot | The lift ran without the `--mmio-range` arguments. Run step 4.4 again and rebuild. |
 | Black screen in the browser after a warp | A warp only works while you control the King, not during a load. |
 | No sound and the game quits (Windows) | `RECOMP_AC97_READY` was set to `0`. Leave it unset. |
+| Where is the game's log? (Windows) | `logs\sneakking.log` beside `game\`, unless output is redirected. `CONSOLE=1` in `settings.ini` (or `RECOMP_CONSOLE=1`) shows it in a console instead. |
 
 `docs/BUILDING.md` has more.
 

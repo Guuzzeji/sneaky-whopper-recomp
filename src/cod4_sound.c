@@ -51,6 +51,12 @@ static int init(void)
     }
     if ((e = getenv("RECOMP_SHOOTER_VOL")) != NULL)
         s_vol = (float)atof(e);
+    /* RECOMP_VOLUME, the game's master volume (apu_xaudio2.c), applies here too. */
+    if ((e = getenv("RECOMP_VOLUME")) != NULL && *e) {
+        int v = atoi(e);
+        IXAudio2MasteringVoice_SetVolume(s_master, (v < 0 ? 0 : v > 100 ? 100 : v) / 100.0f,
+                                         XAUDIO2_COMMIT_NOW);
+    }
     s_failed = 0;
     return 1;
 }
